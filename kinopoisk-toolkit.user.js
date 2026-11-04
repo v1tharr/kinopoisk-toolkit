@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.3.0
+// @version      0.3.1
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -279,7 +279,7 @@
         <option value="film">Только фильмы</option>
         <option value="series">Только сериалы</option>
       </select>
-      <select name="genre"></select>
+      <select name="genre"><option value="">Все жанры</option></select>
       <span class="only-voted">Моя оценка</span>
       <input class="only-voted" name="myMin" type="number" step="any" min="1" max="10" placeholder="от">
       <input class="only-voted" name="myMax" type="number" step="any" min="1" max="10" placeholder="до">
@@ -399,10 +399,15 @@
       .join('') + '</div>';
   }
 
-  function render() {
+  // подписи и состояние кнопок не зависят от данных, поэтому обновляем их и пока список грузится
+  function syncControls() {
     root.classList.toggle('planned', listKind(location.pathname) === 'planned');
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
     $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
+  }
+
+  function render() {
+    syncControls();
     const all = curItems();
     if (!all.length) return;
     hydrate(all);
@@ -586,6 +591,7 @@
       field('sort').value = state.sort;
     }
     loadAiOptions();
+    syncControls();
     $('#kpx-title').textContent = 'Kinopoisk Toolkit';
     if (curItems().length) { fillGenres(); readFilters(); render(); } else load(false);
   });
@@ -596,11 +602,13 @@
 
   // Кинопоиск — SPA: адрес меняется без перезагрузки, поэтому кнопку показываем только на нужных страницах
   let lastPath = location.pathname;
-  setInterval(() => {
+  const syncButton = () => {
     openBtn.style.display = LIST_PATH.test(location.pathname) ? '' : 'none';
     if (location.pathname !== lastPath) {
       lastPath = location.pathname;
       root.hidden = true;
     }
-  }, 700);
+  };
+  syncButton();
+  setInterval(syncButton, 700);
 })();
