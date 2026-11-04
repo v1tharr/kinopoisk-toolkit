@@ -212,6 +212,7 @@
   // ---------- интерфейс ----------
 
   const css = `
+    :host{all:initial}
     #kpx-open{position:fixed;right:16px;bottom:16px;z-index:99998;padding:10px 16px;border:0;border-radius:8px;
       background:#f60;color:#fff;font:600 14px system-ui,sans-serif;cursor:pointer;box-shadow:0 2px 10px #0006}
     #kpx{position:fixed;inset:0;z-index:99999;background:#16161a;color:#e6e6e6;font:14px system-ui,sans-serif;
@@ -253,9 +254,12 @@
     #kpx .tile div{margin-top:4px;font-size:13px}
     #kpx .tile small{color:#999}
   `;
-  document.head.append(Object.assign(document.createElement('style'), { textContent: css }));
+  // Интерфейс живёт в shadow DOM, чтобы стили Кинопоиска не попадали в кнопки и поля
+  const host = document.createElement('div');
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.append(Object.assign(document.createElement('style'), { textContent: css }));
 
-  const openBtn = Object.assign(document.createElement('button'), { id: 'kpx-open', textContent: 'Toolkit' });
+  const openBtn = Object.assign(document.createElement('button'), { id: 'kpx-open', textContent: 'Инструменты' });
   const root = document.createElement('div');
   root.id = 'kpx';
   root.hidden = true;
@@ -311,7 +315,8 @@
       <textarea id="kpx-preview" rows="6" placeholder="Здесь появится текст для ИИ"></textarea>
     </div>
     <div class="body" id="kpx-body"></div>`;
-  document.body.append(openBtn, root);
+  shadow.append(openBtn, root);
+  document.body.append(host);
 
   const $ = (sel) => root.querySelector(sel);
   const field = (name) => $(`[name="${name}"]`);
