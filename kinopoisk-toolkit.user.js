@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.3.2
+// @version      0.4.0
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -23,17 +23,16 @@
   const TID = { card: 'a2ef0117', rating: '5cb64c50', title: 'ecca3393' };
   const CARD = `[data-tid="${TID.card}"]`;
   const PAGE_DELAY = 400; // пауза между страницами списка, чтобы не словить капчу
-  const KP_DELAY = 700; // пауза между страницами фильмов
   const REFRESH_AFTER = 5 * 60 * 1000; // не чаще раза в 5 минут проверяем новые записи
+  const SCHEMA = 2; // версия формата кэша: при смене старые списки перезагружаются
 
   const state = {
     q: '', type: 'all', genre: '',
     myMin: null, myMax: null, kpMin: null, kpMax: null, yMin: null, yMax: null,
     sort: 'my', dir: -1, view: 'table',
   };
-  const lists = {}; // pathname -> [{ id, type, title, year, genre, my, kp, poster }]
+  const lists = {}; // pathname -> [{ id, type, title, original, year, genres, my, kp, votes, poster }]
   const stamps = {}; // pathname -> когда загружен
-  let kpRun = null;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -49,10 +48,36 @@
       try { localStorage.setItem('kpx:' + key, JSON.stringify(value)); } catch { /* storage недоступен — не критично */ }
     },
   };
-  const kpCache = store.get('kp') || {}; // id -> рейтинг Кинопоиска
 
-  // Всё, что завязано на разметку сайта, живёт здесь: parseCards, lastPage, parseKp.
+  // Всё, что завязано на разметку сайта, живёт здесь: readMovies, parseCards, lastPage.
+
+  // Помимо карточек страница содержит данные, из которых отрисована (кэш Apollo в inline-скрипте).
+  // Там уже есть рейтинг Кинопоиска, все жанры и оригинальные названия.
+  function readMovies(doc) {
+    const movies = new Map();
+    const script = [...doc.querySelectorAll('script')].find((s) => /__ssr_initial_data\s*=\s*\{/.test(s.textContent));
+    if (!script) return movies;
+    try {
+      const text = script.textContent;
+      const json = text.slice(text.indexOf('{', text.indexOf('__ssr_initial_data')), text.lastIndexOf('}') + 1);
+      const cache = JSON.parse(json).apolloState;
+      for (const [key, entity] of Object.entries(cache)) {
+        const id = key.match(/^[A-Za-z]+:(\d+)$/)?.[1];
+        if (!id || !entity.title) continue;
+        const kp = entity.rating?.kinopoisk;
+        movies.set(id, {
+          original: entity.title.original || '',
+          genres: (entity.genres || []).map((g) => cache[g.__ref]?.name).filter(Boolean),
+          kp: kp?.isActive ? kp.value : null,
+          votes: kp?.count ?? null,
+        });
+      }
+    } catch { /* формат данных изменился — останется то, что видно на карточках */ }
+    return movies;
+  }
+
   function parseCards(doc, kind) {
+    const movies = readMovies(doc);
     const out = [];
     doc.querySelectorAll(CARD).forEach((card) => {
       const link = card.querySelector('a[href^="/film/"], a[href^="/series/"]');
@@ -61,15 +86,19 @@
       const sub = (card.querySelector('[class*="styles_subtitle"]')?.textContent || '').trim();
       const badge = parseFloat(card.querySelector(`[data-tid="${TID.rating}"]`)?.textContent.replace(',', '.'));
       const rating = Number.isNaN(badge) ? null : badge;
+      const extra = movies.get(m[2]);
+      const cardGenre = sub.includes(',') ? sub.slice(sub.indexOf(',') + 1).trim() : '';
       out.push({
         id: m[2],
         type: m[1],
         title: card.querySelector(`[data-tid="${TID.title}"]`)?.textContent.trim() || link.querySelector('img')?.alt || m[2],
+        original: extra?.original || '',
         year: Number(sub.match(/^\d{4}/)?.[0]) || null,
-        genre: sub.includes(',') ? sub.slice(sub.indexOf(',') + 1).trim() : '',
+        genres: extra?.genres.length ? extra.genres : (cardGenre ? [cardGenre] : []),
         // в «оценках» на карточке твоя оценка, в «буду смотреть» — рейтинг Кинопоиска
         my: kind === 'voted' ? rating : null,
-        kp: kind === 'planned' ? rating : null,
+        kp: extra?.kp ?? (kind === 'planned' ? rating : null),
+        votes: extra?.votes ?? null,
         poster: card.querySelector('img')?.getAttribute('src') || '',
       });
     });
@@ -80,20 +109,6 @@
     const nums = [...doc.querySelectorAll('nav[aria-label="Страницы"] a[href*="page="]')]
       .map((a) => Number(new URL(a.getAttribute('href'), location.origin).searchParams.get('page')));
     return Math.max(1, ...nums.filter(Boolean));
-  }
-
-  function parseKp(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) {
-      try {
-        for (const node of [].concat(JSON.parse(s.textContent))) {
-          const v = Number(node?.aggregateRating?.ratingValue);
-          if (v) return v;
-        }
-      } catch { /* битый json-ld, пробуем следующий */ }
-    }
-    const m = html.match(/"ratingValue"\s*:\s*"?([\d.]+)/);
-    return m ? Number(m[1]) : null;
   }
 
   const captchaError = () => new Error('Кинопоиск просит капчу — открой его в соседней вкладке, пройди её и повтори');
@@ -154,7 +169,7 @@
     for (const path of paths) {
       if (!force && lists[path]) return { path, items: lists[path], fromCache: true };
       const cached = !force && store.get('list:' + path);
-      if (cached) {
+      if (cached?.v === SCHEMA) {
         lists[path] = cached.items;
         stamps[path] = cached.ts;
         return { path, items: cached.items, fromCache: true };
@@ -162,7 +177,7 @@
       try {
         lists[path] = await loadAll(path, onProgress);
         stamps[path] = Date.now();
-        store.set('list:' + path, { ts: stamps[path], items: lists[path] });
+        store.set('list:' + path, { v: SCHEMA, ts: stamps[path], items: lists[path] });
         return { path, items: lists[path] };
       } catch (e) {
         lastError = e;
@@ -199,7 +214,7 @@
       }
       lists[path] = fresh.concat(lists[path]);
       stamps[path] = Date.now();
-      store.set('list:' + path, { ts: stamps[path], items: lists[path] });
+      store.set('list:' + path, { v: SCHEMA, ts: stamps[path], items: lists[path] });
       if (path === location.pathname && !root.hidden) {
         setStamp(path);
         fillGenres();
@@ -209,42 +224,6 @@
       note('Не удалось проверить новые записи: ' + e.message);
     } finally {
       refreshing = false;
-    }
-  }
-
-  const hydrate = (items) => items.forEach((i) => { if (i.kp == null && kpCache[i.id] != null) i.kp = kpCache[i.id]; });
-
-  async function loadKpRatings() {
-    if (kpRun) { kpRun.stop = true; return; }
-    const todo = visibleItems({ ignoreKp: true }).filter((i) => i.kp == null);
-    if (!todo.length) return;
-    const run = (kpRun = { stop: false, done: 0, total: todo.length });
-    let misses = 0;
-    note('');
-    render();
-    try {
-      for (const item of todo) {
-        if (run.stop) break;
-        const res = await fetch(`/${item.type}/${item.id}/`, { credentials: 'same-origin' });
-        if (/captcha/i.test(res.url)) throw captchaError();
-        const value = parseKp(await res.text());
-        if (value == null) {
-          if (++misses >= 3) throw new Error('Не нашёл рейтинг на странице фильма — разметка изменилась?');
-        } else {
-          misses = 0;
-          kpCache[item.id] = value;
-          item.kp = value;
-        }
-        run.done++;
-        if (run.done % 10 === 0) { store.set('kp', kpCache); render(); }
-        await sleep(KP_DELAY);
-      }
-    } catch (e) {
-      note('Ошибка: ' + e.message);
-    } finally {
-      store.set('kp', kpCache);
-      kpRun = null;
-      render();
     }
   }
 
@@ -336,7 +315,6 @@
       </select>
       <button id="kpx-dir"></button>
       <button id="kpx-reset">Сбросить</button>
-      <button id="kpx-kp" hidden></button>
     </div>
     <div id="kpx-note" hidden></div>
     <div class="ai" id="kpx-ai" hidden>
@@ -392,20 +370,22 @@
     });
   }
 
-  function visibleItems({ ignoreKp = false } = {}) {
+  const sortValue = (i, key) => (key === 'genre' ? i.genres[0] : i[key]);
+
+  function visibleItems() {
     const s = state;
     const inRange = (v, min, max) => (min == null && max == null) || (v != null && (min == null || v >= min) && (max == null || v <= max));
     const list = curItems().filter((i) =>
-      (!s.q || i.title.toLowerCase().includes(s.q)) &&
+      (!s.q || i.title.toLowerCase().includes(s.q) || i.original.toLowerCase().includes(s.q)) &&
       (s.type === 'all' || i.type === s.type) &&
-      (!s.genre || i.genre === s.genre) &&
+      (!s.genre || i.genres.includes(s.genre)) &&
       inRange(i.my, s.myMin, s.myMax) &&
-      (ignoreKp || inRange(i.kp, s.kpMin, s.kpMax)) &&
+      inRange(i.kp, s.kpMin, s.kpMax) &&
       inRange(i.year, s.yMin, s.yMax));
 
     return list.sort((a, b) => {
-      const x = a[s.sort];
-      const y = b[s.sort];
+      const x = sortValue(a, s.sort);
+      const y = sortValue(b, s.sort);
       const empty = (v) => v == null || v === '';
       if (empty(x) || empty(y)) return empty(x) - empty(y); // пустые всегда в конце
       return (typeof x === 'string' ? x.localeCompare(y, 'ru') : x - y) * s.dir;
@@ -429,10 +409,10 @@
         <td>${i.poster ? `<img loading="lazy" src="${esc(posterUrl(i.poster))}" alt="">` : ''}</td>
         <td><a href="${itemUrl(i)}" target="_blank" rel="noopener">${esc(i.title)}</a></td>
         <td class="num">${i.year ?? ''}</td>
-        <td>${esc(i.genre)}</td>
+        <td>${esc(i.genres.join(', '))}</td>
         <td>${i.type === 'series' ? 'сериал' : 'фильм'}</td>
         ${voted ? `<td class="num">${i.my ?? '—'}</td>` : ''}
-        <td class="num">${kpText(i)}</td>
+        <td class="num" title="${i.votes ? `голосов: ${i.votes}` : ''}">${kpText(i)}</td>
       </tr>`)
       .join('');
     return `<table><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
@@ -446,7 +426,7 @@
         return `<a class="tile" href="${itemUrl(i)}" target="_blank" rel="noopener">
           <img loading="lazy" src="${esc(posterUrl(i.poster))}" alt="">
           ${badge != null ? `<b>${badge}</b>` : ''}
-          <div>${esc(i.title)}<br><small>${i.year ?? ''}${i.genre ? ', ' + esc(i.genre) : ''}</small></div>
+          <div>${esc(i.title)}<br><small>${i.year ?? ''}${i.genres.length ? ', ' + esc(i.genres[0]) : ''}</small></div>
         </a>`;
       })
       .join('') + '</div>';
@@ -463,12 +443,6 @@
     syncControls();
     const all = curItems();
     if (!all.length) return;
-    hydrate(all);
-
-    const missing = visibleItems({ ignoreKp: true }).filter((i) => i.kp == null).length;
-    const kpBtn = $('#kpx-kp');
-    kpBtn.hidden = !kpRun && !missing;
-    kpBtn.textContent = kpRun ? `Остановить (${kpRun.done}/${kpRun.total})` : `Подгрузить рейтинг КП (${missing})`;
 
     const list = visibleItems();
     $('#kpx-count').textContent = `${list.length} из ${all.length}`;
@@ -479,7 +453,7 @@
 
   function fillGenres() {
     const counts = new Map();
-    curItems().forEach((i) => i.genre && counts.set(i.genre, (counts.get(i.genre) || 0) + 1));
+    curItems().forEach((i) => i.genres.forEach((g) => counts.set(g, (counts.get(g) || 0) + 1)));
     const sel = field('genre');
     const prev = sel.value;
     sel.innerHTML = '<option value="">Все жанры</option>' + [...counts]
@@ -542,7 +516,7 @@
   }
 
   function formatItem(i) {
-    const meta = [i.year, i.genre, i.type === 'series' ? 'сериал' : 'фильм'].filter(Boolean).join(', ');
+    const meta = [i.year, i.genres.join('/'), i.type === 'series' ? 'сериал' : 'фильм'].filter(Boolean).join(', ');
     const marks = [i.my != null && `моя ${i.my}`, i.kp != null && `КП ${r1(i.kp)}`].filter(Boolean).join(', ');
     return `${i.title} (${meta})${marks ? ' — ' + marks : ''}`;
   }
@@ -558,7 +532,6 @@
       const { path, items } = await ensureList(isOpen ? [location.pathname] : listPaths(kind), {
         onProgress: (p, total) => { $('#kpx-ai-info').textContent = `«${title}»: страница ${p} из ${total}…`; },
       });
-      hydrate(items);
       const rows = isOpen && opts.filter && path === location.pathname ? visibleItems() : items;
       sections.push({ kind, title, rows });
     }
@@ -613,7 +586,6 @@
     if (t.id === 'kpx-close') setOpen(false);
     if (t.id === 'kpx-refresh') load(true);
     if (t.id === 'kpx-dir') { state.dir = -state.dir; render(); }
-    if (t.id === 'kpx-kp') loadKpRatings();
     if (t.id === 'kpx-ai-toggle') $('#kpx-ai').hidden = !$('#kpx-ai').hidden;
     if (t.id === 'kpx-build') onBuild();
     if (t.id === 'kpx-copy') {
