@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.3.1
+// @version      0.3.2
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -296,7 +296,7 @@
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.append(Object.assign(document.createElement('style'), { textContent: css }));
 
-  const openBtn = Object.assign(document.createElement('button'), { id: 'kpx-open', textContent: 'Инструменты' });
+  const openBtn = Object.assign(document.createElement('button'), { id: 'kpx-open', textContent: 'Kinopoisk Toolkit' });
   const root = document.createElement('div');
   root.id = 'kpx';
   root.hidden = true;
