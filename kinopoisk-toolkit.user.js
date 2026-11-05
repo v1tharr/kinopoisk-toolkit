@@ -24,6 +24,7 @@
   const CARD = `[data-tid="${TID.card}"]`;
   const PAGE_DELAY = 400; // пауза между страницами списка, чтобы не словить капчу
   const KP_DELAY = 700; // пауза между страницами фильмов
+  const REFRESH_AFTER = 5 * 60 * 1000; // не чаще раза в 5 минут проверяем новые записи
 
   const state = {
     q: '', type: 'all', genre: '',
@@ -50,10 +51,7 @@
   };
   const kpCache = store.get('kp') || {}; // id -> рейтинг Кинопоиска
 
-  // ---------- Кинопоиск: разбор страниц ----------
-  // Всё, что завязано на разметку сайта, живёт в этом блоке. Остальной код работает с
-  // обычными объектами { id, type, title, year, genre, my, kp, poster }.
-
+  // Всё, что завязано на разметку сайта, живёт здесь: parseCards, lastPage, parseKp.
   function parseCards(doc, kind) {
     const out = [];
     doc.querySelectorAll(CARD).forEach((card) => {
@@ -100,8 +98,6 @@
 
   const captchaError = () => new Error('Кинопоиск просит капчу — открой его в соседней вкладке, пройди её и повтори');
 
-  // ---------- загрузка ----------
-
   const scrape = (doc, kind) => ({ items: parseCards(doc, kind), last: lastPage(doc) });
 
   // Если сервер отдал страницу без карточек (рисуются на клиенте) — рендерим её в скрытом iframe
@@ -135,9 +131,12 @@
     return page.items.length ? page : loadInFrame(url, kind);
   }
 
+  // без ?b=…, фильтруем сами
+  const pageUrl = (path, n) => `${location.origin}${path}?page=${n}`;
+
   async function loadAll(path, onProgress) {
     const kind = listKind(path);
-    const url = (n) => `${location.origin}${path}?page=${n}`; // без ?b=…, фильтруем сами
+    const url = (n) => pageUrl(path, n);
     const first = await loadPage(url(1), kind);
     let all = first.items;
     for (let p = 2; p <= first.last; p++) {
@@ -153,12 +152,12 @@
   async function ensureList(paths, { force = false, onProgress } = {}) {
     let lastError;
     for (const path of paths) {
-      if (!force && lists[path]) return { path, items: lists[path] };
+      if (!force && lists[path]) return { path, items: lists[path], fromCache: true };
       const cached = !force && store.get('list:' + path);
       if (cached) {
         lists[path] = cached.items;
         stamps[path] = cached.ts;
-        return { path, items: cached.items };
+        return { path, items: cached.items, fromCache: true };
       }
       try {
         lists[path] = await loadAll(path, onProgress);
@@ -172,7 +171,47 @@
     throw lastError;
   }
 
-  // подмешиваем рейтинг КП, который уже подгружали с карточек фильмов
+  // Новые записи идут в списке первыми, поэтому вместо полной перезагрузки листаем страницы,
+  // пока не пойдут уже известные. Заодно подтягиваем оценки, которые поменялись.
+  let refreshing = false;
+
+  async function refreshNewest(path) {
+    if (refreshing || Date.now() - (stamps[path] || 0) < REFRESH_AFTER) return;
+    refreshing = true;
+    try {
+      const kind = listKind(path);
+      const byId = new Map(lists[path].map((i) => [i.id, i]));
+      const fresh = [];
+      for (let p = 1; ; p++) {
+        const page = await loadPage(pageUrl(path, p), kind);
+        let added = 0;
+        for (const item of page.items) {
+          const known = byId.get(item.id);
+          if (known) {
+            Object.assign(known, item, { kp: item.kp ?? known.kp });
+          } else {
+            fresh.push(item);
+            added++;
+          }
+        }
+        if (!added || p >= page.last) break;
+        await sleep(PAGE_DELAY);
+      }
+      lists[path] = fresh.concat(lists[path]);
+      stamps[path] = Date.now();
+      store.set('list:' + path, { ts: stamps[path], items: lists[path] });
+      if (path === location.pathname && !root.hidden) {
+        setStamp(path);
+        fillGenres();
+        render();
+      }
+    } catch (e) {
+      note('Не удалось проверить новые записи: ' + e.message);
+    } finally {
+      refreshing = false;
+    }
+  }
+
   const hydrate = (items) => items.forEach((i) => { if (i.kp == null && kpCache[i.id] != null) i.kp = kpCache[i.id]; });
 
   async function loadKpRatings() {
@@ -209,13 +248,11 @@
     }
   }
 
-  // ---------- интерфейс ----------
-
   const css = `
     :host{all:initial}
     #kpx-open{position:fixed;right:16px;bottom:16px;z-index:99998;padding:10px 16px;border:0;border-radius:8px;
       background:#f60;color:#fff;font:600 14px system-ui,sans-serif;cursor:pointer;box-shadow:0 2px 10px #0006}
-    #kpx{position:fixed;inset:0;z-index:99999;background:#16161a;color:#e6e6e6;font:14px system-ui,sans-serif;
+    #kpx{position:fixed;inset:0;z-index:99999;overscroll-behavior:contain;background:#16161a;color:#e6e6e6;font:14px system-ui,sans-serif;
       display:flex;flex-direction:column}
     #kpx[hidden],#kpx [hidden]{display:none!important}
     #kpx header{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid #2c2c33}
@@ -236,7 +273,7 @@
     #kpx .ai label{display:flex;gap:6px;align-items:center}
     #kpx .ai #kpx-preview{min-height:120px;font:12px ui-monospace,monospace}
     #kpx #kpx-note{padding:6px 20px;color:#f90;font-size:13px}
-    #kpx .body{flex:1;overflow:auto;padding:0 20px 20px}
+    #kpx .body{flex:1;overflow:auto;overscroll-behavior:contain;scrollbar-color:#555 #16161a;padding:0 20px 20px}
     #kpx .msg{padding:40px 0;text-align:center;color:#999}
     #kpx table{border-collapse:collapse;width:100%}
     #kpx th{position:sticky;top:0;background:#16161a;text-align:left;padding:8px 10px;cursor:pointer;
@@ -317,6 +354,22 @@
     <div class="body" id="kpx-body"></div>`;
   shadow.append(openBtn, root);
   document.body.append(host);
+
+  // Пока окно открыто, страница под ним не должна прокручиваться: иначе её полоса прокрутки
+  // остаётся рядом с окном и не реагирует на мышь
+  let pageOverflow = null;
+
+  function setOpen(open) {
+    if (open === !root.hidden) return;
+    root.hidden = !open;
+    const els = [document.documentElement, document.body];
+    if (open) {
+      pageOverflow = els.map((el) => el.style.overflow);
+      els.forEach((el) => { el.style.overflow = 'hidden'; });
+    } else if (pageOverflow) {
+      els.forEach((el, i) => { el.style.overflow = pageOverflow[i]; });
+    }
+  }
 
   const $ = (sel) => root.querySelector(sel);
   const field = (name) => $(`[name="${name}"]`);
@@ -436,6 +489,9 @@
     sel.value = counts.has(prev) ? prev : '';
   }
 
+  const setStamp = (path) => {
+    $('#kpx-title').textContent = `Kinopoisk Toolkit · обновлено ${new Date(stamps[path]).toLocaleString('ru')}`;
+  };
   const setMsg = (text) => { $('#kpx-body').innerHTML = `<div class="msg">${esc(text)}</div>`; };
   let loading = false;
 
@@ -444,10 +500,11 @@
     loading = true;
     note('');
     $('#kpx-count').textContent = '';
+    let fromCache = false;
     try {
       setMsg('Загружаю страницу 1…');
-      await ensureList([location.pathname], { force, onProgress: (p, total) => setMsg(`Загружаю страницу ${p} из ${total}…`) });
-      $('#kpx-title').textContent = `Kinopoisk Toolkit · обновлено ${new Date(stamps[location.pathname]).toLocaleString('ru')}`;
+      ({ fromCache } = await ensureList([location.pathname], { force, onProgress: (p, total) => setMsg(`Загружаю страницу ${p} из ${total}…`) }));
+      setStamp(location.pathname);
     } catch (e) {
       setMsg('Ошибка: ' + e.message);
       return;
@@ -457,9 +514,8 @@
     fillGenres();
     readFilters();
     render();
+    if (fromCache) refreshNewest(location.pathname);
   }
-
-  // ---------- выгрузка для ИИ ----------
 
   const AI_DEFAULTS = { q: '', voted: true, planned: true, filter: false };
   const readAi = () => ({
@@ -544,8 +600,6 @@
     }
   }
 
-  // ---------- события ----------
-
   root.addEventListener('input', (e) => {
     if (e.target.closest('.filters')) {
       readFilters();
@@ -556,7 +610,7 @@
   root.addEventListener('click', (e) => {
     const t = e.target;
     if (t.dataset.view) { state.view = t.dataset.view; render(); }
-    if (t.id === 'kpx-close') root.hidden = true;
+    if (t.id === 'kpx-close') setOpen(false);
     if (t.id === 'kpx-refresh') load(true);
     if (t.id === 'kpx-dir') { state.dir = -state.dir; render(); }
     if (t.id === 'kpx-kp') loadKpRatings();
@@ -582,7 +636,7 @@
   });
 
   openBtn.addEventListener('click', () => {
-    root.hidden = false;
+    setOpen(true);
     // на «Буду смотреть» своей оценки нет — сортируем по рейтингу КП
     if (listKind(location.pathname) === 'planned' && state.sort === 'my') {
       state.sort = 'kp';
@@ -593,11 +647,18 @@
     loadAiOptions();
     syncControls();
     $('#kpx-title').textContent = 'Kinopoisk Toolkit';
-    if (curItems().length) { fillGenres(); readFilters(); render(); } else load(false);
+    if (curItems().length) {
+      fillGenres();
+      readFilters();
+      render();
+      refreshNewest(location.pathname);
+    } else {
+      load(false);
+    }
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !root.hidden) root.hidden = true;
+    if (e.key === 'Escape' && !root.hidden) setOpen(false);
   });
 
   // Кинопоиск — SPA: адрес меняется без перезагрузки, поэтому кнопку показываем только на нужных страницах
@@ -606,7 +667,7 @@
     openBtn.style.display = LIST_PATH.test(location.pathname) ? '' : 'none';
     if (location.pathname !== lastPath) {
       lastPath = location.pathname;
-      root.hidden = true;
+      setOpen(false);
     }
   };
   syncButton();
