@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.3
+// @version      0.4.4
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -39,6 +39,7 @@
   const r1 = (v) => Math.round(v * 10) / 10;
   const listKind = (path) => (/planned/.test(path) ? 'planned' : 'voted');
   const curItems = () => lists[location.pathname] || [];
+  const itemUrl = (i) => `/${i.type}/${i.id}/`;
 
   const store = {
     get(key) {
@@ -114,6 +115,42 @@
   const captchaError = () => new Error('Кинопоиск просит капчу — открой его в соседней вкладке, пройди её и повтори');
 
   const scrape = (doc, kind) => ({ items: parseCards(doc, kind), last: lastPage(doc) });
+
+  function readDuration(doc) {
+    const textNodes = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    for (let node; (node = textNodes.nextNode());) {
+      const match = node.textContent.trim().match(/^Время(?:\s*:\s*(.*))?$/);
+      if (!match) continue;
+      const label = node.parentElement;
+      // В карточке фильма значение соседствует с подписью, в списке эпизодов — ячейки таблицы.
+      const values = [match[1], node.nextSibling?.textContent, label.nextElementSibling?.textContent,
+        label.parentElement?.nextElementSibling?.textContent];
+      for (const value of values) {
+        const text = value?.trim() || '';
+        const total = text.match(/\s[—–-]\s+(\d+)\s*мин\.?$/i);
+        if (total && Number(total[1]) > 0) return Number(total[1]);
+        const duration = text.match(/^(?:(\d+)\s*(?:час(?:а|ов)?|ч\.?)\s*)?(?:(\d+)\s*(?:мин(?:ута|уты|ут)?|м)\.?)?(?:\s*\/\s*\d+:\d{2})?$/i);
+        if (!duration) continue;
+        const minutes = Number(duration[1] || 0) * 60 + Number(duration[2] || 0);
+        if (minutes > 0) return minutes;
+      }
+    }
+    return null;
+  }
+
+  async function fetchDuration(item, signal) {
+    const url = item.type === 'series' ? `/film/${item.id}/episodes/` : itemUrl(item);
+    const res = await fetch(url, { credentials: 'same-origin', signal });
+    if (/captcha/i.test(res.url)) throw captchaError();
+    if (res.status === 404 || res.status === 410) return null;
+    if (!res.ok || new URL(res.url).origin !== location.origin) {
+      throw new Error('Кинопоиск не отдал страницу тайтла. Повтори загрузку позже.');
+    }
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    const minutes = readDuration(doc);
+    if (minutes == null && !doc.querySelector('h1')) throw new Error('Не удалось прочитать страницу тайтла.');
+    return minutes;
+  }
 
   // Если сервер отдал страницу без карточек (рисуются на клиенте) — рендерим её в скрытом iframe
   function loadInFrame(url, kind) {
@@ -254,6 +291,7 @@
     #kpx .ai label{display:flex;gap:6px;align-items:center}
     #kpx .ai #kpx-preview{min-height:120px;font:12px ui-monospace,monospace}
     #kpx #kpx-note{padding:6px 20px;color:#f90;font-size:13px}
+    #kpx #kpx-duration-progress{padding:6px 20px;color:#999;font-size:13px}
     #kpx .body{flex:1;overflow:auto;overscroll-behavior:contain;scrollbar-color:#555 #16161a;padding:0 20px 20px}
     #kpx .msg{padding:40px 0;text-align:center;color:#999}
     #kpx table{border-collapse:collapse;width:100%}
@@ -282,10 +320,10 @@
       #kpx #kpx-close{grid-area:1/4;justify-self:end;min-width:40px}
       #kpx .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:10px}
       #kpx .filters :is(input,select){box-sizing:border-box;width:100%;min-width:0;font-size:16px}
-      #kpx .filters input[name=q],#kpx .range,#kpx .filters select[name=sort]{grid-column:1/-1}
+      #kpx .filters input[name=q],#kpx .range,#kpx .filters select[name=sort],#kpx #kpx-duration{grid-column:1/-1}
       #kpx .range{display:grid;grid-template-columns:6em repeat(2,minmax(0,1fr))}
       #kpx .filters .range input{width:100%}
-      #kpx .ai,#kpx #kpx-note{padding-inline:10px}
+      #kpx .ai,#kpx #kpx-note,#kpx #kpx-duration-progress{padding-inline:10px}
       #kpx .ai textarea,#kpx .ai #kpx-preview{font-size:16px}
       #kpx .body{flex:1 1 0;min-height:180px;overscroll-behavior:auto;padding-inline:10px}
       #kpx table{min-width:580px}
@@ -337,6 +375,7 @@
         <option class="only-voted" value="my">Сортировка: моя оценка</option>
         <option value="kp">Сортировка: рейтинг КП</option>
         <option value="added">Сортировка: по добавлению</option>
+        <option value="duration">Сортировка: по продолжительности</option>
         <option value="title">Сортировка: название</option>
         <option value="year">Сортировка: год</option>
         <option value="genre">Сортировка: жанр</option>
@@ -344,8 +383,10 @@
       </select>
       <button id="kpx-dir"></button>
       <button id="kpx-reset">Сбросить</button>
+      <button id="kpx-duration" hidden>Загрузить длительности</button>
     </div>
     <div id="kpx-note" hidden></div>
+    <div id="kpx-duration-progress" role="status" hidden></div>
     <div class="ai" id="kpx-ai" hidden>
       <textarea name="aiq" rows="2" placeholder="Запрос, например: что посмотреть сегодня вечером, хочется чего-то лёгкого"></textarea>
       <div class="row">
@@ -390,6 +431,7 @@
       pageOverflow = els.map((el) => el.style.overflow);
       els.forEach((el) => { el.style.overflow = 'hidden'; });
     } else if (pageOverflow) {
+      durationLoad?.abort();
       els.forEach((el, i) => { el.style.overflow = pageOverflow[i]; });
       restoreViewport?.();
       restoreViewport = null;
@@ -417,7 +459,56 @@
     });
   }
 
-  const sortValue = (i, key) => (key === 'genre' ? i.genres[0] : i[key]);
+  const durationCache = new Map();
+  const durationKey = (item) => 'duration:' + itemUrl(item);
+  function durationFor(item) {
+    const key = durationKey(item);
+    if (!durationCache.has(key)) durationCache.set(key, store.get(key)?.minutes);
+    return durationCache.get(key);
+  }
+
+  let durationLoad = null;
+
+  async function loadDurations() {
+    if (durationLoad) {
+      durationLoad.abort();
+      return;
+    }
+    const path = location.pathname;
+    const pending = curItems().filter((item) => durationFor(item) === undefined);
+    if (!pending.length) return;
+    const controller = new AbortController();
+    durationLoad = controller;
+    const progress = $('#kpx-duration-progress');
+    let done = 0;
+    note('');
+    syncControls();
+    try {
+      for (const item of pending) {
+        if (controller.signal.aborted || location.pathname !== path) break;
+        progress.textContent = `Загружаю длительности: ${done + 1} из ${pending.length}`;
+        const minutes = await fetchDuration(item, controller.signal);
+        const key = durationKey(item);
+        durationCache.set(key, minutes);
+        store.set(key, { minutes });
+        done++;
+        if (done % 10 === 0 && state.sort === 'duration') render();
+        if (done < pending.length) await sleep(PAGE_DELAY);
+      }
+    } catch (e) {
+      if (!controller.signal.aborted && location.pathname === path) note(e.message);
+    } finally {
+      durationLoad = null;
+      progress.textContent = '';
+      if (!root.hidden && location.pathname === path && state.sort === 'duration') render();
+      else syncControls();
+    }
+  }
+
+  function sortValue(item, key) {
+    if (key === 'duration') return durationFor(item);
+    return key === 'genre' ? item.genres[0] : item[key];
+  }
 
   function visibleItems() {
     const s = state;
@@ -443,14 +534,15 @@
   }
 
   const posterUrl = (p) => (p.startsWith('//') ? 'https:' + p : p);
-  const itemUrl = (i) => `/${i.type}/${i.id}/`;
   const kpText = (i) => (i.kp != null ? r1(i.kp).toFixed(1) : '—');
 
   function renderTable(list) {
     const voted = listKind(location.pathname) === 'voted';
+    const showDuration = state.sort === 'duration';
     const cols = [['title', 'Название'], ['year', 'Год'], ['genre', 'Жанр'], ['type', 'Тип']];
     if (voted) cols.push(['my', 'Моя оценка']);
     cols.push(['kp', 'Рейтинг КП']);
+    if (showDuration) cols.push(['duration', 'Длительность, мин']);
     const head = cols
       .map(([k, name]) => `<th data-k="${k}">${name}${state.sort === k ? (state.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`)
       .join('');
@@ -463,6 +555,7 @@
         <td>${i.type === 'series' ? 'сериал' : 'фильм'}</td>
         ${voted ? `<td class="num">${i.my ?? '—'}</td>` : ''}
         <td class="num" title="${i.votes ? `голосов: ${i.votes}` : ''}">${kpText(i)}</td>
+        ${showDuration ? `<td class="num">${durationFor(i) ?? '—'}</td>` : ''}
       </tr>`)
       .join('');
     return `<table><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
@@ -473,10 +566,11 @@
     return '<div class="grid">' + list
       .map((i) => {
         const badge = voted ? i.my : (i.kp != null ? r1(i.kp) : null);
+        const minutes = state.sort === 'duration' ? durationFor(i) : null;
         return `<a class="tile" href="${itemUrl(i)}" target="_blank" rel="noopener">
           <img loading="lazy" src="${esc(posterUrl(i.poster))}" alt="">
           ${badge != null ? `<b>${badge}</b>` : ''}
-          <div>${esc(i.title)}<br><small>${i.year ?? ''}${i.genres.length ? ', ' + esc(i.genres[0]) : ''}</small></div>
+          <div>${esc(i.title)}<br><small>${i.year ?? ''}${i.genres.length ? ', ' + esc(i.genres[0]) : ''}${minutes != null ? ` · ${minutes} мин` : ''}</small></div>
         </a>`;
       })
       .join('') + '</div>';
@@ -487,6 +581,10 @@
     root.classList.toggle('planned', listKind(location.pathname) === 'planned');
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
     $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
+    const durationButton = $('#kpx-duration');
+    durationButton.hidden = !durationLoad && (state.sort !== 'duration' || !curItems().some((i) => durationFor(i) === undefined));
+    durationButton.textContent = durationLoad ? 'Остановить загрузку' : 'Загрузить длительности';
+    $('#kpx-duration-progress').hidden = !durationLoad;
   }
 
   function render() {
@@ -639,6 +737,7 @@
     if (t.id === 'kpx-close') setOpen(false);
     if (t.id === 'kpx-refresh') load(true);
     if (t.id === 'kpx-dir') { state.dir = -state.dir; render(); }
+    if (t.id === 'kpx-duration') loadDurations();
     if (t.id === 'kpx-ai-toggle') $('#kpx-ai').hidden = !$('#kpx-ai').hidden;
     if (t.id === 'kpx-build') onBuild();
     if (t.id === 'kpx-copy') {
