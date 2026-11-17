@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.2
+// @version      0.4.3
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -486,10 +486,7 @@
   function syncControls() {
     root.classList.toggle('planned', listKind(location.pathname) === 'planned');
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
-    const ascending = state.dir > 0;
-    $('#kpx-dir').textContent = state.sort === 'added'
-      ? (ascending ? 'Сначала старые' : 'Сначала новые')
-      : (ascending ? '▲ по возрастанию' : '▼ по убыванию');
+    $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
   }
 
   function render() {
