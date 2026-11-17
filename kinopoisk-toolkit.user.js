@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.5
+// @version      0.4.6
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -369,7 +369,7 @@
       <h2>Kinopoisk Toolkit<span id="kpx-stamp"></span><small id="kpx-count"></small></h2>
       <button data-view="table">Таблица</button>
       <button data-view="grid">Плитка</button>
-      <button id="kpx-ai-toggle">Для ИИ</button>
+      <button id="kpx-ai-toggle">Выгрузить</button>
       <button id="kpx-refresh">Обновить</button>
       <button id="kpx-close" aria-label="Закрыть">✕</button>
     </header>
@@ -413,16 +413,27 @@
     <div id="kpx-note" hidden></div>
     <div id="kpx-duration-progress" role="status" hidden></div>
     <div class="ai" id="kpx-ai" hidden>
-      <textarea name="aiq" rows="2" placeholder="Запрос, например: что посмотреть сегодня вечером, хочется чего-то лёгкого"></textarea>
       <div class="row">
         <label><input type="checkbox" name="aiVoted"> Мои оценки</label>
         <label><input type="checkbox" name="aiPlanned"> Буду смотреть</label>
         <label><input type="checkbox" name="aiFilter"> Применить текущие фильтры к открытому списку</label>
+        <select name="exportType" aria-label="Тип тайтлов для выгрузки">
+          <option value="all">Фильмы и сериалы</option>
+          <option value="film">Только фильмы</option>
+          <option value="series">Только сериалы</option>
+        </select>
+      </div>
+      <details>
+        <summary>Жанры для выгрузки — любой из выбранных</summary>
+        <p>Без отметок выгружаются все жанры.</p>
+        <div class="row" id="kpx-export-genres"></div>
+      </details>
+      <div class="row">
         <button id="kpx-build">Сформировать</button>
         <button id="kpx-copy">Копировать</button>
         <span id="kpx-ai-info"></span>
       </div>
-      <textarea id="kpx-preview" rows="6" placeholder="Здесь появится текст для ИИ"></textarea>
+      <textarea id="kpx-preview" rows="6" aria-label="Текст выгрузки" placeholder="Здесь появится текст выгрузки"></textarea>
     </div>
     <div class="body" id="kpx-body"></div>`;
   shadow.append(openBtn, root);
@@ -688,20 +699,53 @@
     if (fromCache) refreshNewest(location.pathname);
   }
 
-  const AI_DEFAULTS = { q: '', voted: true, planned: true, filter: false };
+  const AI_DEFAULTS = { voted: true, planned: true, filter: false, type: 'all', genres: [] };
   const readAi = () => ({
-    q: field('aiq').value.trim(),
     voted: field('aiVoted').checked,
     planned: field('aiPlanned').checked,
     filter: field('aiFilter').checked,
+    type: field('exportType').value,
+    genres: [...root.querySelectorAll('[name="exportGenre"]:checked')].map((input) => input.value),
   });
 
   function loadAiOptions() {
     const o = { ...AI_DEFAULTS, ...store.get('ai') };
-    field('aiq').value = o.q;
     field('aiVoted').checked = o.voted;
     field('aiPlanned').checked = o.planned;
     field('aiFilter').checked = o.filter;
+    field('exportType').value = o.type;
+    fillExportGenres(o.genres);
+  }
+
+  function fillExportGenres(selected = readAi().genres) {
+    const genres = new Set(selected);
+    for (const kind of ['voted', 'planned']) {
+      if (!field(kind === 'voted' ? 'aiVoted' : 'aiPlanned').checked) continue;
+      const paths = kind === listKind(location.pathname) ? [location.pathname] : listPaths(kind);
+      paths.forEach((path) => lists[path]?.forEach((item) => item.genres.forEach((genre) => genres.add(genre))));
+    }
+    $('#kpx-export-genres').innerHTML = [...genres].sort((a, b) => a.localeCompare(b, 'ru'))
+      .map((genre) => `<label><input type="checkbox" name="exportGenre" value="${esc(genre)}"${selected.includes(genre) ? ' checked' : ''}> ${esc(genre)}</label>`).join('');
+  }
+
+  async function prepareExportGenres() {
+    const controls = [field('aiVoted'), field('aiPlanned'), $('#kpx-build')];
+    if (controls.some((control) => control.disabled)) return;
+    const opts = readAi();
+    controls.forEach((control) => { control.disabled = true; });
+    try {
+      for (const kind of ['voted', 'planned']) {
+        if (!opts[kind]) continue;
+        $('#kpx-ai-info').textContent = 'Загружаю жанры выбранных списков…';
+        await ensureList(kind === listKind(location.pathname) ? [location.pathname] : listPaths(kind));
+      }
+      fillExportGenres();
+      $('#kpx-ai-info').textContent = '';
+    } catch (e) {
+      $('#kpx-ai-info').textContent = 'Ошибка: ' + e.message;
+    } finally {
+      controls.forEach((control) => { control.disabled = false; });
+    }
   }
 
   // Адрес второго списка строим от пользователя из текущего URL; ссылку из шапки сайта оставляем запасной
@@ -729,7 +773,10 @@
       const { path, items } = await ensureList(isOpen ? [location.pathname] : listPaths(kind), {
         onProgress: (p, total) => { $('#kpx-ai-info').textContent = `«${title}»: страница ${p} из ${total}…`; },
       });
-      const rows = isOpen && opts.filter && path === location.pathname ? visibleItems() : items;
+      const source = isOpen && opts.filter && path === location.pathname ? visibleItems() : items;
+      const rows = source.filter((item) =>
+        (opts.type === 'all' || item.type === opts.type) &&
+        (!opts.genres.length || item.genres.some((genre) => opts.genres.includes(genre))));
       sections.push({ kind, title, rows });
     }
     if (!sections.length) throw new Error('Отметь хотя бы один список');
@@ -738,8 +785,9 @@
     const kinds = sections.map((s) => s.kind);
     if (kinds.includes('voted')) intro.push('«Мои оценки» — то, что я уже смотрел.');
     if (kinds.includes('planned')) intro.push('«Буду смотреть» — кандидаты на просмотр.');
-    if (kinds.length === 2) intro.push('Выбирай только из списка «Буду смотреть», опираясь на мой вкус по оценкам; к каждому варианту — одно-два предложения, почему он подходит.');
-    intro.push(`Запрос: ${opts.q || 'что посмотреть сегодня?'}`);
+    if (opts.type !== 'all') intro.push(opts.type === 'film' ? 'Выгружены только фильмы.' : 'Выгружены только сериалы.');
+    if (opts.genres.length) intro.push('Отбор по жанрам: ' + opts.genres.join(', ') + '.');
+    if (opts.filter) intro.push('К открытому списку применены текущие фильтры таблицы.');
 
     const body = sections.map((s) => `## ${s.title} (${s.rows.length})\n${s.rows.map(formatItem).join('\n')}`);
     return [intro.join('\n'), ...body].join('\n\n');
@@ -759,6 +807,9 @@
 
   async function onBuild() {
     const info = $('#kpx-ai-info');
+    const button = $('#kpx-build');
+    if (button.disabled) return;
+    button.disabled = true;
     try {
       const text = await buildPrompt();
       $('#kpx-preview').value = text;
@@ -767,10 +818,16 @@
       await copyText(text).then(() => { info.textContent += ' · скопировано'; }, () => {});
     } catch (e) {
       info.textContent = 'Ошибка: ' + e.message;
+    } finally {
+      button.disabled = false;
     }
   }
 
   root.addEventListener('input', (e) => {
+    if (e.target.closest('#kpx-ai')) {
+      store.set('ai', readAi());
+      if (['aiVoted', 'aiPlanned'].includes(e.target.name)) prepareExportGenres();
+    }
     if (e.target.closest('.filters')) {
       const startDuration = e.target === field('sort') && e.target.value === 'duration' && state.sort !== 'duration';
       if (e.target === field('sort') && e.target.value === 'added' && state.sort !== 'added') {
@@ -825,7 +882,10 @@
       if (durationLoad) durationLoad.abort();
       else loadDurations();
     }
-    if (t.id === 'kpx-ai-toggle') $('#kpx-ai').hidden = !$('#kpx-ai').hidden;
+    if (t.id === 'kpx-ai-toggle') {
+      $('#kpx-ai').hidden = !$('#kpx-ai').hidden;
+      if (!$('#kpx-ai').hidden) prepareExportGenres();
+    }
     if (t.id === 'kpx-build') onBuild();
     if (t.id === 'kpx-copy') {
       const text = $('#kpx-preview').value;
