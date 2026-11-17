@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.0
+// @version      0.4.1
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -237,6 +237,7 @@
     #kpx header{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid #2c2c33}
     #kpx h2{margin:0;font-size:18px;flex:1}
     #kpx h2 small{font-weight:400;color:#999;margin-left:10px}
+    #kpx #kpx-stamp:not(:empty)::before{content:' · ';white-space:pre}
     #kpx button,#kpx select,#kpx input,#kpx textarea{background:#26262d;color:inherit;border:1px solid #3a3a44;
       border-radius:6px;padding:6px 10px;font:inherit}
     #kpx button{cursor:pointer}
@@ -245,6 +246,7 @@
     #kpx .filters input[type=number]{width:64px}
     #kpx .filters input[name=q]{width:220px}
     #kpx .filters span{color:#999}
+    #kpx .range{display:flex;gap:8px;align-items:center}
     #kpx.planned .only-voted{display:none}
     #kpx .ai{display:flex;flex-direction:column;gap:8px;padding:10px 20px;border-bottom:1px solid #2c2c33}
     #kpx .ai textarea{width:100%;box-sizing:border-box;resize:vertical}
@@ -269,6 +271,26 @@
     #kpx .tile b{position:absolute;top:6px;left:6px;background:#0009;padding:2px 7px;border-radius:5px}
     #kpx .tile div{margin-top:4px;font-size:13px}
     #kpx .tile small{color:#999}
+    @media (max-width:700px), (max-height:500px) {
+      #kpx{overflow-y:auto}
+      #kpx header{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:10px}
+      #kpx h2{grid-column:1/4}
+      #kpx #kpx-stamp{display:block;color:#999;font-size:12px;font-weight:400}
+      #kpx #kpx-stamp:empty{display:none}
+      #kpx #kpx-stamp:not(:empty)::before{content:none}
+      #kpx header button{padding-inline:3px;min-height:40px}
+      #kpx #kpx-close{grid-area:1/4;justify-self:end;min-width:40px}
+      #kpx .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:10px}
+      #kpx .filters :is(input,select){box-sizing:border-box;width:100%;min-width:0;font-size:16px}
+      #kpx .filters input[name=q],#kpx .range,#kpx .filters select[name=sort]{grid-column:1/-1}
+      #kpx .range{display:grid;grid-template-columns:6em repeat(2,minmax(0,1fr))}
+      #kpx .filters .range input{width:100%}
+      #kpx .ai,#kpx #kpx-note{padding-inline:10px}
+      #kpx .ai textarea,#kpx .ai #kpx-preview{font-size:16px}
+      #kpx .body{flex:1 1 0;min-height:180px;overscroll-behavior:auto;padding-inline:10px}
+      #kpx table{min-width:580px}
+      #kpx .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+    }
   `;
   // Интерфейс живёт в shadow DOM, чтобы стили Кинопоиска не попадали в кнопки и поля
   const host = document.createElement('div');
@@ -281,12 +303,12 @@
   root.hidden = true;
   root.innerHTML = `
     <header>
-      <h2><span id="kpx-title">Kinopoisk Toolkit</span><small id="kpx-count"></small></h2>
+      <h2>Kinopoisk Toolkit<span id="kpx-stamp"></span><small id="kpx-count"></small></h2>
       <button data-view="table">Таблица</button>
       <button data-view="grid">Плитка</button>
       <button id="kpx-ai-toggle">Для ИИ</button>
       <button id="kpx-refresh">Обновить</button>
-      <button id="kpx-close">✕</button>
+      <button id="kpx-close" aria-label="Закрыть">✕</button>
     </header>
     <div class="filters">
       <input name="q" placeholder="Поиск по названию">
@@ -296,15 +318,21 @@
         <option value="series">Только сериалы</option>
       </select>
       <select name="genre"><option value="">Все жанры</option></select>
-      <span class="only-voted">Моя оценка</span>
-      <input class="only-voted" name="myMin" type="number" step="any" min="1" max="10" placeholder="от">
-      <input class="only-voted" name="myMax" type="number" step="any" min="1" max="10" placeholder="до">
-      <span>Рейтинг КП</span>
-      <input name="kpMin" type="number" step="any" min="1" max="10" placeholder="от">
-      <input name="kpMax" type="number" step="any" min="1" max="10" placeholder="до">
-      <span>Год</span>
-      <input name="yMin" type="number" placeholder="от">
-      <input name="yMax" type="number" placeholder="до">
+      <div class="range only-voted">
+        <span>Моя оценка</span>
+        <input name="myMin" type="number" step="any" min="1" max="10" placeholder="от" aria-label="Моя оценка от">
+        <input name="myMax" type="number" step="any" min="1" max="10" placeholder="до" aria-label="Моя оценка до">
+      </div>
+      <div class="range">
+        <span>Рейтинг КП</span>
+        <input name="kpMin" type="number" step="any" min="1" max="10" placeholder="от" aria-label="Рейтинг КП от">
+        <input name="kpMax" type="number" step="any" min="1" max="10" placeholder="до" aria-label="Рейтинг КП до">
+      </div>
+      <div class="range">
+        <span>Год</span>
+        <input name="yMin" type="number" placeholder="от" aria-label="Год от">
+        <input name="yMax" type="number" placeholder="до" aria-label="Год до">
+      </div>
       <select name="sort">
         <option class="only-voted" value="my">Сортировка: моя оценка</option>
         <option value="kp">Сортировка: рейтинг КП</option>
@@ -331,21 +359,39 @@
     </div>
     <div class="body" id="kpx-body"></div>`;
   shadow.append(openBtn, root);
-  document.body.append(host);
+  document.documentElement.append(host);
 
   // Пока окно открыто, страница под ним не должна прокручиваться: иначе её полоса прокрутки
   // остаётся рядом с окном и не реагирует на мышь
   let pageOverflow = null;
+  let restoreViewport = null;
+
+  function useMobileViewport() {
+    const existing = document.head.querySelector('meta[name="viewport"]');
+    const viewport = existing || document.createElement('meta');
+    const content = viewport.getAttribute('content');
+    viewport.name = 'viewport';
+    viewport.content = 'width=device-width, initial-scale=1';
+    if (!existing) document.head.append(viewport);
+    return () => {
+      if (!existing) viewport.remove();
+      else if (content === null) viewport.removeAttribute('content');
+      else viewport.content = content;
+    };
+  }
 
   function setOpen(open) {
     if (open === !root.hidden) return;
     root.hidden = !open;
     const els = [document.documentElement, document.body];
     if (open) {
+      if (matchMedia('(pointer: coarse)').matches) restoreViewport = useMobileViewport();
       pageOverflow = els.map((el) => el.style.overflow);
       els.forEach((el) => { el.style.overflow = 'hidden'; });
     } else if (pageOverflow) {
       els.forEach((el, i) => { el.style.overflow = pageOverflow[i]; });
+      restoreViewport?.();
+      restoreViewport = null;
     }
   }
 
@@ -464,7 +510,7 @@
   }
 
   const setStamp = (path) => {
-    $('#kpx-title').textContent = `Kinopoisk Toolkit · обновлено ${new Date(stamps[path]).toLocaleString('ru')}`;
+    $('#kpx-stamp').textContent = `обновлено ${new Date(stamps[path]).toLocaleString('ru')}`;
   };
   const setMsg = (text) => { $('#kpx-body').innerHTML = `<div class="msg">${esc(text)}</div>`; };
   let loading = false;
@@ -618,7 +664,7 @@
     }
     loadAiOptions();
     syncControls();
-    $('#kpx-title').textContent = 'Kinopoisk Toolkit';
+    $('#kpx-stamp').textContent = '';
     if (curItems().length) {
       fillGenres();
       readFilters();
