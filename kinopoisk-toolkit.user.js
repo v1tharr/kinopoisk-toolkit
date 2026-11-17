@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.1
+// @version      0.4.2
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -336,6 +336,7 @@
       <select name="sort">
         <option class="only-voted" value="my">Сортировка: моя оценка</option>
         <option value="kp">Сортировка: рейтинг КП</option>
+        <option value="added">Сортировка: по добавлению</option>
         <option value="title">Сортировка: название</option>
         <option value="year">Сортировка: год</option>
         <option value="genre">Сортировка: жанр</option>
@@ -429,6 +430,9 @@
       inRange(i.kp, s.kpMin, s.kpMax) &&
       inRange(i.year, s.yMin, s.yMax));
 
+    // Кинопоиск отдаёт свежие записи первыми, кэш сохраняет этот порядок.
+    if (s.sort === 'added') return s.dir > 0 ? list.reverse() : list;
+
     return list.sort((a, b) => {
       const x = sortValue(a, s.sort);
       const y = sortValue(b, s.sort);
@@ -482,7 +486,10 @@
   function syncControls() {
     root.classList.toggle('planned', listKind(location.pathname) === 'planned');
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
-    $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
+    const ascending = state.dir > 0;
+    $('#kpx-dir').textContent = state.sort === 'added'
+      ? (ascending ? 'Сначала старые' : 'Сначала новые')
+      : (ascending ? '▲ по возрастанию' : '▼ по убыванию');
   }
 
   function render() {
@@ -621,6 +628,9 @@
 
   root.addEventListener('input', (e) => {
     if (e.target.closest('.filters')) {
+      if (e.target === field('sort') && e.target.value === 'added' && state.sort !== 'added') {
+        state.dir = -1;
+      }
       readFilters();
       render();
     }
