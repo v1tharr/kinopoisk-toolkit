@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.4
+// @version      0.4.5
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -116,7 +116,30 @@
 
   const scrape = (doc, kind) => ({ items: parseCards(doc, kind), last: lastPage(doc) });
 
-  function readDuration(doc) {
+  function parseDuration(value) {
+    const text = value?.trim() || '';
+    const iso = text.match(/^PT(?:(\d+)H)?(?:(\d+)M)?$/i);
+    const total = text.match(/\s[—–-]\s+(\d+)\s*мин\.?$/i);
+    if (total) return Number(total[1]) || null;
+    const time = iso ?? text.match(/^(?:(\d+)\s*(?:час(?:а|ов)?|ч\.?)\s*)?(?:(\d+)\s*(?:мин(?:ута|уты|ут)?|м)\.?)?(?:\s*\/\s*\d+:\d{2})?$/i);
+    return time ? Number(time[1] || 0) * 60 + Number(time[2] || 0) || null : null;
+  }
+
+  function readDuration(doc, type) {
+    if (type === 'film') {
+      const metadata = doc.querySelector('meta[itemprop="duration"], time[itemprop="duration"][datetime]');
+      const minutes = parseDuration(metadata?.getAttribute('content') ?? metadata?.getAttribute('datetime'));
+      if (minutes) return minutes;
+      for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+        let data;
+        try { data = JSON.parse(script.textContent); } catch { continue; }
+        for (const entry of [data].flat().flatMap((value) => [value, value?.mainEntity, ...(Array.isArray(value?.['@graph']) ? value['@graph'] : [])])) {
+          if (![entry?.['@type']].flat().includes('Movie')) continue;
+          const minutes = typeof entry.duration === 'string' ? parseDuration(entry.duration) : null;
+          if (minutes) return minutes;
+        }
+      }
+    }
     const textNodes = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
     for (let node; (node = textNodes.nextNode());) {
       const match = node.textContent.trim().match(/^Время(?:\s*:\s*(.*))?$/);
@@ -124,15 +147,11 @@
       const label = node.parentElement;
       // В карточке фильма значение соседствует с подписью, в списке эпизодов — ячейки таблицы.
       const values = [match[1], node.nextSibling?.textContent, label.nextElementSibling?.textContent,
-        label.parentElement?.nextElementSibling?.textContent];
+        label.parentElement?.nextElementSibling?.textContent,
+        label.parentElement?.parentElement?.nextElementSibling?.textContent];
       for (const value of values) {
-        const text = value?.trim() || '';
-        const total = text.match(/\s[—–-]\s+(\d+)\s*мин\.?$/i);
-        if (total && Number(total[1]) > 0) return Number(total[1]);
-        const duration = text.match(/^(?:(\d+)\s*(?:час(?:а|ов)?|ч\.?)\s*)?(?:(\d+)\s*(?:мин(?:ута|уты|ут)?|м)\.?)?(?:\s*\/\s*\d+:\d{2})?$/i);
-        if (!duration) continue;
-        const minutes = Number(duration[1] || 0) * 60 + Number(duration[2] || 0);
-        if (minutes > 0) return minutes;
+        const minutes = parseDuration(value);
+        if (minutes) return minutes;
       }
     }
     return null;
@@ -147,7 +166,7 @@
       throw new Error('Кинопоиск не отдал страницу тайтла. Повтори загрузку позже.');
     }
     const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-    const minutes = readDuration(doc);
+    const minutes = readDuration(doc, item.type);
     if (minutes == null && !doc.querySelector('h1')) throw new Error('Не удалось прочитать страницу тайтла.');
     return minutes;
   }
@@ -297,6 +316,12 @@
     #kpx table{border-collapse:collapse;width:100%}
     #kpx th{position:sticky;top:0;background:#16161a;text-align:left;padding:8px 10px;cursor:pointer;
       border-bottom:1px solid #3a3a44;user-select:none;white-space:nowrap}
+    #kpx .column-edge{position:absolute;inset:0 0 0 auto;width:12px;cursor:col-resize;touch-action:none}
+    #kpx .column-edge::after{content:'';position:absolute;right:0;top:20%;height:60%;width:1px;background:#3a3a44}
+    #kpx .column-edge:hover::after{background:#f60}
+    #kpx .sized th{white-space:normal}
+    #kpx .sized :is(th,td){overflow-wrap:anywhere}
+    #kpx.resizing{cursor:col-resize;user-select:none}
     #kpx td{padding:4px 10px;border-bottom:1px solid #22222a}
     #kpx tr:hover td{background:#1e1e25}
     #kpx td img{width:28px;height:42px;object-fit:cover;border-radius:3px;display:block}
@@ -463,17 +488,18 @@
   const durationKey = (item) => 'duration:' + itemUrl(item);
   function durationFor(item) {
     const key = durationKey(item);
-    if (!durationCache.has(key)) durationCache.set(key, store.get(key)?.minutes);
+    if (!durationCache.has(key)) {
+      const cached = store.get(key);
+      // В старой версии ошибки разбора могли сохраниться как пустые значения.
+      durationCache.set(key, cached?.minutes > 0 || cached?.checked ? cached.minutes : undefined);
+    }
     return durationCache.get(key);
   }
 
   let durationLoad = null;
 
   async function loadDurations() {
-    if (durationLoad) {
-      durationLoad.abort();
-      return;
-    }
+    if (durationLoad || root.hidden || state.sort !== 'duration') return;
     const path = location.pathname;
     const pending = curItems().filter((item) => durationFor(item) === undefined);
     if (!pending.length) return;
@@ -481,25 +507,29 @@
     durationLoad = controller;
     const progress = $('#kpx-duration-progress');
     let done = 0;
+    let found = 0;
     note('');
     syncControls();
     try {
       for (const item of pending) {
         if (controller.signal.aborted || location.pathname !== path) break;
-        progress.textContent = `Загружаю длительности: ${done + 1} из ${pending.length}`;
+        progress.textContent = `Длительности: проверено ${done} из ${pending.length}, найдено ${found}`;
         const minutes = await fetchDuration(item, controller.signal);
         const key = durationKey(item);
         durationCache.set(key, minutes);
-        store.set(key, { minutes });
+        store.set(key, { minutes, checked: true });
+        if (minutes != null) found++;
         done++;
-        if (done % 10 === 0 && state.sort === 'duration') render();
+        if (((found === 1 && minutes != null) || done % 10 === 0) && state.sort === 'duration') render();
         if (done < pending.length) await sleep(PAGE_DELAY);
       }
     } catch (e) {
       if (!controller.signal.aborted && location.pathname === path) note(e.message);
     } finally {
       durationLoad = null;
-      progress.textContent = '';
+      progress.textContent = location.pathname === path
+        ? `Длительности: проверено ${done} из ${pending.length}, найдено ${found}`
+        : '';
       if (!root.hidden && location.pathname === path && state.sort === 'duration') render();
       else syncControls();
     }
@@ -535,6 +565,18 @@
 
   const posterUrl = (p) => (p.startsWith('//') ? 'https:' + p : p);
   const kpText = (i) => (i.kp != null ? r1(i.kp).toFixed(1) : '—');
+  const columnWidths = store.get('columnWidths') || {};
+  let columnDrag = null;
+
+  function sizeTable(table, widths) {
+    table.classList.add('sized');
+    table.style.tableLayout = 'fixed';
+    table.style.minWidth = '0';
+    table.style.width = widths.reduce((sum, width) => sum + width, 0) + 'px';
+    table.querySelectorAll('col').forEach((col, index) => {
+      col.style.width = widths[index] + 'px';
+    });
+  }
 
   function renderTable(list) {
     const voted = listKind(location.pathname) === 'voted';
@@ -544,7 +586,7 @@
     cols.push(['kp', 'Рейтинг КП']);
     if (showDuration) cols.push(['duration', 'Длительность, мин']);
     const head = cols
-      .map(([k, name]) => `<th data-k="${k}">${name}${state.sort === k ? (state.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`)
+      .map(([k, name]) => `<th data-k="${k}">${name}${state.sort === k ? (state.dir > 0 ? ' ▲' : ' ▼') : ''}<span class="column-edge" title="Перетащите, чтобы изменить ширину"></span></th>`)
       .join('');
     const rows = list
       .map((i) => `<tr>
@@ -558,7 +600,8 @@
         ${showDuration ? `<td class="num">${durationFor(i) ?? '—'}</td>` : ''}
       </tr>`)
       .join('');
-    return `<table><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+    const layout = voted ? 'voted' : 'planned';
+    return `<table data-layout="${layout}${showDuration ? '-duration' : ''}"><colgroup>${'<col>'.repeat(cols.length + 1)}</colgroup><thead><tr><th><span class="column-edge" title="Перетащите, чтобы изменить ширину"></span></th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function renderGrid(list) {
@@ -584,11 +627,13 @@
     const durationButton = $('#kpx-duration');
     durationButton.hidden = !durationLoad && (state.sort !== 'duration' || !curItems().some((i) => durationFor(i) === undefined));
     durationButton.textContent = durationLoad ? 'Остановить загрузку' : 'Загрузить длительности';
-    $('#kpx-duration-progress').hidden = !durationLoad;
+    const progress = $('#kpx-duration-progress');
+    progress.hidden = state.sort !== 'duration' || (!durationLoad && !progress.textContent);
   }
 
   function render() {
     syncControls();
+    if (columnDrag) return;
     const all = curItems();
     if (!all.length) return;
 
@@ -597,6 +642,9 @@
     $('#kpx-body').innerHTML = list.length
       ? (state.view === 'table' ? renderTable(list) : renderGrid(list))
       : '<div class="msg">Ничего не найдено</div>';
+    const table = $('#kpx-body table');
+    const widths = table && columnWidths[table.dataset.layout];
+    if (widths && widths.length === table.rows[0].cells.length) sizeTable(table, widths);
   }
 
   function fillGenres() {
@@ -636,6 +684,7 @@
     fillGenres();
     readFilters();
     render();
+    loadDurations();
     if (fromCache) refreshNewest(location.pathname);
   }
 
@@ -723,12 +772,47 @@
 
   root.addEventListener('input', (e) => {
     if (e.target.closest('.filters')) {
+      const startDuration = e.target === field('sort') && e.target.value === 'duration' && state.sort !== 'duration';
       if (e.target === field('sort') && e.target.value === 'added' && state.sort !== 'added') {
         state.dir = -1;
       }
       readFilters();
       render();
+      if (startDuration) loadDurations();
     }
+  });
+
+  root.addEventListener('pointerdown', (e) => {
+    const edge = e.target.closest('.column-edge');
+    if (!edge || e.button !== 0 || columnDrag) return;
+    const cell = edge.parentElement;
+    const table = cell.closest('table');
+    const widths = Array.from(cell.parentElement.cells, (th) => Math.round(th.getBoundingClientRect().width));
+    columnDrag = { table, widths, index: cell.cellIndex, start: e.clientX, width: widths[cell.cellIndex], pointerId: e.pointerId };
+    root.setPointerCapture(e.pointerId);
+    root.classList.add('resizing');
+    e.preventDefault();
+  });
+
+  root.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== columnDrag?.pointerId) return;
+    const { table, widths, index, start, width } = columnDrag;
+    const next = Math.max(index === 0 ? 48 : 64, Math.round(width + e.clientX - start));
+    if (next === widths[index]) return;
+    widths[index] = next;
+    sizeTable(table, widths);
+  });
+
+  root.addEventListener('lostpointercapture', (e) => {
+    if (e.pointerId !== columnDrag?.pointerId) return;
+    const { table, widths } = columnDrag;
+    if (table.classList.contains('sized')) {
+      columnWidths[table.dataset.layout] = widths;
+      store.set('columnWidths', columnWidths);
+    }
+    columnDrag = null;
+    root.classList.remove('resizing');
+    render();
   });
 
   root.addEventListener('click', (e) => {
@@ -737,7 +821,10 @@
     if (t.id === 'kpx-close') setOpen(false);
     if (t.id === 'kpx-refresh') load(true);
     if (t.id === 'kpx-dir') { state.dir = -state.dir; render(); }
-    if (t.id === 'kpx-duration') loadDurations();
+    if (t.id === 'kpx-duration') {
+      if (durationLoad) durationLoad.abort();
+      else loadDurations();
+    }
     if (t.id === 'kpx-ai-toggle') $('#kpx-ai').hidden = !$('#kpx-ai').hidden;
     if (t.id === 'kpx-build') onBuild();
     if (t.id === 'kpx-copy') {
@@ -775,6 +862,7 @@
       fillGenres();
       readFilters();
       render();
+      loadDurations();
       refreshNewest(location.pathname);
     } else {
       load(false);
