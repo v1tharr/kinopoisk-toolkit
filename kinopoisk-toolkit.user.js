@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.7
+// @version      0.4.8
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -303,12 +303,16 @@
     #kpx .filters input[type=number]{width:64px}
     #kpx .filters input[name=q]{width:220px}
     #kpx .filters span{color:#999}
+    #kpx #kpx-filters>summary{display:none}
+    #kpx #kpx-filters:not([open])>.filters{display:flex}
     #kpx .range{display:flex;gap:8px;align-items:center}
     #kpx.planned .only-voted{display:none}
     #kpx .ai{display:flex;flex-direction:column;gap:8px;padding:10px 20px;border-bottom:1px solid #2c2c33}
     #kpx .ai textarea{width:100%;box-sizing:border-box;resize:vertical}
     #kpx .ai .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
     #kpx .ai label{display:flex;gap:6px;align-items:center}
+    #kpx .ai input[type=number]{width:75px;min-width:0}
+    #kpx .ai fieldset:disabled{opacity:.5}
     #kpx .ai #kpx-preview{min-height:120px;font:12px ui-monospace,monospace}
     #kpx #kpx-note{padding:6px 20px;color:#f90;font-size:13px}
     #kpx #kpx-duration-progress{padding:6px 20px;color:#999;font-size:13px}
@@ -339,19 +343,27 @@
       #kpx{overflow-y:auto}
       #kpx header{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:10px}
       #kpx h2{grid-column:1/4}
-      #kpx #kpx-stamp{display:block;color:#999;font-size:12px;font-weight:400}
+      #kpx #kpx-stamp{display:none}
       #kpx #kpx-stamp:empty{display:none}
       #kpx #kpx-stamp:not(:empty)::before{content:none}
       #kpx header button{padding-inline:3px;min-height:40px}
       #kpx #kpx-close{grid-area:1/4;justify-self:end;min-width:40px}
       #kpx .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:10px}
+      #kpx #kpx-filters{flex-shrink:0;max-height:40dvh;overflow:auto;border-bottom:1px solid #2c2c33}
+      #kpx #kpx-filters>summary{display:list-item;cursor:pointer;padding:10px 14px}
+      #kpx #kpx-filters:not([open])>.filters{display:none}
+      #kpx #kpx-filters[open]>.filters{display:grid}
       #kpx .filters :is(input,select){box-sizing:border-box;width:100%;min-width:0;font-size:16px}
       #kpx .filters input[name=q],#kpx .range,#kpx .filters select[name=sort],#kpx #kpx-duration{grid-column:1/-1}
       #kpx .range{display:grid;grid-template-columns:6em repeat(2,minmax(0,1fr))}
       #kpx .filters .range input{width:100%}
       #kpx .ai,#kpx #kpx-note,#kpx #kpx-duration-progress{padding-inline:10px}
       #kpx .ai textarea,#kpx .ai #kpx-preview{font-size:16px}
-      #kpx .body{flex:1 1 0;min-height:180px;overscroll-behavior:auto;padding-inline:10px}
+      #kpx .body{flex:1 1 0;min-height:0;overscroll-behavior:auto;padding-inline:10px}
+      #kpx .ai{flex-shrink:0;max-height:50dvh;overflow:auto}
+      #kpx header{flex-shrink:0}
+      #kpx table{min-width:800px}
+      #kpx td.num{white-space:nowrap;overflow-wrap:normal}
       #kpx table{min-width:580px}
       #kpx .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
     }
@@ -374,6 +386,8 @@
       <button id="kpx-refresh">Обновить</button>
       <button id="kpx-close" aria-label="Закрыть">✕</button>
     </header>
+    <details id="kpx-filters" open>
+    <summary>Фильтры и сортировка</summary>
     <div class="filters">
       <input name="q" placeholder="Поиск по названию">
       <select name="type">
@@ -411,6 +425,7 @@
       <button id="kpx-reset">Сбросить</button>
       <button id="kpx-duration" hidden>Загрузить длительности</button>
     </div>
+    </details>
     <div id="kpx-note" hidden></div>
     <div id="kpx-duration-progress" role="status" hidden></div>
     <div class="ai" id="kpx-ai" hidden>
@@ -428,6 +443,23 @@
         <summary>Жанры для выгрузки — любой из выбранных</summary>
         <p>Без отметок выгружаются все жанры.</p>
         <div class="row" id="kpx-export-genres"></div>
+      </details>
+      <details id="kpx-export-ratings">
+        <summary>Мои оценки для выгрузки</summary>
+        <p>Без отметок выгружаются все оценки. Отбор действует на список «Мои оценки».</p>
+        <fieldset class="row" id="kpx-export-rating-options" style="border:0;margin:0;padding:0">
+          ${Array.from({ length: 10 }, (_, index) => `<label><input type="checkbox" name="exportRating" value="${index + 1}"> ${index + 1}</label>`).join('')}
+        </fieldset>
+      </details>
+      <details>
+        <summary>Продолжительность в выгрузке</summary>
+        <label><input type="checkbox" name="exportDuration"> Добавить известные длительности</label>
+        <div class="row">
+          <label>От, мин <input name="exportDurationMin" type="number" min="1" aria-label="Продолжительность от, минут"></label>
+          <label>До, мин <input name="exportDurationMax" type="number" min="1" aria-label="Продолжительность до, минут"></label>
+        </div>
+        <p>Диапазон отбирает тайтлы с известной длительностью. Для сериалов используется общее время эпизодов.</p>
+        <button id="kpx-export-duration">Загрузить длительности отбора</button>
       </details>
       <div class="row">
         <button id="kpx-build">Сформировать</button>
@@ -476,6 +508,9 @@
   }
 
   const $ = (sel) => root.querySelector(sel);
+  const compactScreen = matchMedia('(max-width:700px), (max-height:500px)');
+  $('#kpx-filters').open = !compactScreen.matches;
+  compactScreen.addEventListener('change', () => { $('#kpx-filters').open = !compactScreen.matches; });
   const field = (name) => $(`[name="${name}"]`);
 
   function note(text) {
@@ -510,10 +545,11 @@
 
   let durationLoad = null;
 
-  async function loadDurations() {
-    if (durationLoad || root.hidden || state.sort !== 'duration') return;
+  async function loadDurations(items = visibleItems()) {
+    if (durationLoad || root.hidden) return;
     const path = location.pathname;
-    const pending = curItems().filter((item) => durationFor(item) === undefined);
+    const pending = [...new Map(items.map((item) => [itemUrl(item), item])).values()]
+      .filter((item) => durationFor(item) === undefined);
     if (!pending.length) return;
     const controller = new AbortController();
     durationLoad = controller;
@@ -637,10 +673,11 @@
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
     $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
     const durationButton = $('#kpx-duration');
-    durationButton.hidden = !durationLoad && (state.sort !== 'duration' || !curItems().some((i) => durationFor(i) === undefined));
+    durationButton.hidden = !durationLoad && (state.sort !== 'duration' || !visibleItems().some((i) => durationFor(i) === undefined));
     durationButton.textContent = durationLoad ? 'Остановить загрузку' : 'Загрузить длительности';
     const progress = $('#kpx-duration-progress');
-    progress.hidden = state.sort !== 'duration' || (!durationLoad && !progress.textContent);
+    progress.hidden = !durationLoad && (state.sort !== 'duration' || !progress.textContent);
+    $('#kpx-export-duration').textContent = durationLoad ? 'Остановить загрузку' : 'Загрузить длительности отбора';
   }
 
   function render() {
@@ -696,26 +733,34 @@
     fillGenres();
     readFilters();
     render();
-    loadDurations();
     if (fromCache) refreshNewest(location.pathname);
   }
 
-  const AI_DEFAULTS = { voted: true, planned: true, filter: false, type: 'all', genres: [] };
+  const AI_DEFAULTS = { voted: true, planned: true, filter: false, type: 'all', genres: [], ratings: [], duration: true, durationMin: '', durationMax: '' };
   const readAi = () => ({
     voted: field('aiVoted').checked,
     planned: field('aiPlanned').checked,
     filter: field('aiFilter').checked,
     type: field('exportType').value,
     genres: [...root.querySelectorAll('[name="exportGenre"]:checked')].map((input) => input.value),
+    ratings: [...root.querySelectorAll('[name="exportRating"]:checked')].map((input) => Number(input.value)),
+    duration: field('exportDuration').checked,
+    durationMin: field('exportDurationMin').value,
+    durationMax: field('exportDurationMax').value,
   });
 
   function loadAiOptions() {
     const o = { ...AI_DEFAULTS, ...store.get('ai') };
     field('aiVoted').checked = o.voted;
+    $('#kpx-export-rating-options').disabled = !o.voted;
     field('aiPlanned').checked = o.planned;
     field('aiFilter').checked = o.filter;
     field('exportType').value = o.type;
     fillExportGenres(o.genres);
+    root.querySelectorAll('[name="exportRating"]').forEach((input) => { input.checked = o.ratings.includes(Number(input.value)); });
+    field('exportDuration').checked = o.duration;
+    field('exportDurationMin').value = o.durationMin;
+    field('exportDurationMax').value = o.durationMax;
   }
 
   function fillExportGenres(selected = readAi().genres) {
@@ -757,14 +802,20 @@
     return [...new Set([`/user/${user}/movies/${name}/`, header].filter(Boolean))];
   }
 
-  function formatItem(i) {
-    const meta = [i.year, i.genres.join('/'), i.type === 'series' ? 'сериал' : 'фильм'].filter(Boolean).join(', ');
+  function formatItem(i, includeDuration) {
+    const minutes = includeDuration ? durationFor(i) : null;
+    const meta = [i.year, i.genres.join('/'), i.type === 'series' ? 'сериал' : 'фильм',
+      minutes != null ? `${minutes} мин${i.type === 'series' ? ' всего' : ''}` : ''].filter(Boolean).join(', ');
     const marks = [i.my != null && `моя ${i.my}`, i.kp != null && `КП ${r1(i.kp)}`].filter(Boolean).join(', ');
     return `${i.title} (${meta})${marks ? ' — ' + marks : ''}`;
   }
 
-  async function buildPrompt() {
+  async function buildPrompt(loadRuntime = false) {
     const opts = readAi();
+    if ((opts.durationMin && Number(opts.durationMin) < 1) || (opts.durationMax && Number(opts.durationMax) < 1) ||
+        (opts.durationMin && opts.durationMax && Number(opts.durationMin) > Number(opts.durationMax))) {
+      throw new Error('Проверь диапазон продолжительности в минутах');
+    }
     store.set('ai', opts);
     const sections = [];
     for (const [kind, title] of [['voted', 'Мои оценки'], ['planned', 'Буду смотреть']]) {
@@ -777,10 +828,21 @@
       const source = isOpen && opts.filter && path === location.pathname ? visibleItems() : items;
       const rows = source.filter((item) =>
         (opts.type === 'all' || item.type === opts.type) &&
-        (!opts.genres.length || item.genres.some((genre) => opts.genres.includes(genre))));
+        (!opts.genres.length || item.genres.some((genre) => opts.genres.includes(genre))) &&
+        (kind !== 'voted' || !opts.ratings.length || opts.ratings.includes(item.my)));
       sections.push({ kind, title, rows });
     }
     if (!sections.length) throw new Error('Отметь хотя бы один список');
+    if (loadRuntime) await loadDurations(sections.flatMap((section) => section.rows));
+    if (opts.durationMin || opts.durationMax) {
+      sections.forEach((section) => {
+        section.rows = section.rows.filter((item) => {
+          const minutes = durationFor(item);
+          return minutes != null && (!opts.durationMin || minutes >= Number(opts.durationMin)) &&
+            (!opts.durationMax || minutes <= Number(opts.durationMax));
+        });
+      });
+    }
 
     const intro = ['Ниже данные из моего профиля на Кинопоиске. Оценки по 10-балльной шкале: «моя» — моя оценка, «КП» — рейтинг Кинопоиска.'];
     const kinds = sections.map((s) => s.kind);
@@ -788,9 +850,11 @@
     if (kinds.includes('planned')) intro.push('«Буду смотреть» — кандидаты на просмотр.');
     if (opts.type !== 'all') intro.push(opts.type === 'film' ? 'Выгружены только фильмы.' : 'Выгружены только сериалы.');
     if (opts.genres.length) intro.push('Отбор по жанрам: ' + opts.genres.join(', ') + '.');
+    if (opts.ratings.length && opts.voted) intro.push('Мои оценки для отбора: ' + opts.ratings.join(', ') + '.');
+    if (opts.durationMin || opts.durationMax) intro.push(`Продолжительность: от ${opts.durationMin || 'любой'} до ${opts.durationMax || 'любой'} минут. Включены тайтлы с известной длительностью.`);
     if (opts.filter) intro.push('К открытому списку применены текущие фильтры таблицы.');
 
-    const body = sections.map((s) => `## ${s.title} (${s.rows.length})\n${s.rows.map(formatItem).join('\n')}`);
+    const body = sections.map((s) => `## ${s.title} (${s.rows.length})\n${s.rows.map((item) => formatItem(item, opts.duration || opts.durationMin || opts.durationMax)).join('\n')}`);
     return [intro.join('\n'), ...body].join('\n\n');
   }
 
@@ -806,13 +870,13 @@
     }
   }
 
-  async function onBuild() {
+  async function onBuild(loadRuntime = false) {
     const info = $('#kpx-ai-info');
     const button = $('#kpx-build');
     if (button.disabled) return;
     button.disabled = true;
     try {
-      const text = await buildPrompt();
+      const text = await buildPrompt(loadRuntime);
       $('#kpx-preview').value = text;
       info.textContent = `${text.length.toLocaleString('ru')} символов`;
       // после долгой загрузки браузер может не дать писать в буфер без клика — тогда есть кнопка «Копировать»
@@ -827,16 +891,15 @@
   root.addEventListener('input', (e) => {
     if (e.target.closest('#kpx-ai')) {
       store.set('ai', readAi());
+      $('#kpx-export-rating-options').disabled = !field('aiVoted').checked;
       if (['aiVoted', 'aiPlanned'].includes(e.target.name)) prepareExportGenres();
     }
     if (e.target.closest('.filters')) {
-      const startDuration = e.target === field('sort') && e.target.value === 'duration' && state.sort !== 'duration';
       if (e.target === field('sort') && e.target.value === 'added' && state.sort !== 'added') {
         state.dir = -1;
       }
       readFilters();
       render();
-      if (startDuration) loadDurations();
     }
   });
 
@@ -883,6 +946,10 @@
       if (durationLoad) durationLoad.abort();
       else loadDurations();
     }
+    if (t.id === 'kpx-export-duration') {
+      if (durationLoad) durationLoad.abort();
+      else onBuild(true);
+    }
     if (t.id === 'kpx-ai-toggle') {
       $('#kpx-ai').hidden = !$('#kpx-ai').hidden;
       if (!$('#kpx-ai').hidden) prepareExportGenres();
@@ -923,7 +990,6 @@
       fillGenres();
       readFilters();
       render();
-      loadDurations();
       refreshNewest(location.pathname);
     } else {
       load(false);
