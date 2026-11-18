@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.9
+// @version      0.4.10
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -327,7 +327,6 @@
     #kpx .sized td{overflow-wrap:break-word}
     #kpx td.num{white-space:nowrap}
     #kpx #kpx-list{padding:6px 20px;color:#999;border-bottom:1px solid #2c2c33}
-    #kpx #kpx-list a{margin-left:12px;text-decoration:underline}
     #kpx.resizing{cursor:col-resize;user-select:none}
     #kpx td{padding:4px 10px;border-bottom:1px solid #22222a}
     #kpx tr:hover td{background:#1e1e25}
@@ -436,7 +435,6 @@
       <div class="row">
         <label><input type="checkbox" name="aiVoted"> Мои оценки</label>
         <label><input type="checkbox" name="aiPlanned"> Буду смотреть</label>
-        <label><input type="checkbox" name="aiFilter"> Применить текущие фильтры к открытому списку</label>
         <select name="exportType" aria-label="Тип тайтлов для выгрузки">
           <option value="all">Фильмы и сериалы</option>
           <option value="film">Только фильмы</option>
@@ -684,7 +682,7 @@
   function syncControls() {
     const planned = listKind(location.pathname) === 'planned';
     root.classList.toggle('planned', planned);
-    $('#kpx-list').innerHTML = `${planned ? 'Буду смотреть' : 'Мои оценки'}<a href="${esc(listPaths(planned ? 'voted' : 'planned')[0])}">${planned ? 'Открыть мои оценки' : 'Открыть «Буду смотреть»'}</a>`;
+    $('#kpx-list').textContent = planned ? 'Буду смотреть' : 'Мои оценки';
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
     $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
     const durationButton = $('#kpx-duration');
@@ -758,11 +756,10 @@
     if (fromCache) refreshNewest(location.pathname);
   }
 
-  const AI_DEFAULTS = { voted: true, planned: true, filter: false, type: 'all', genres: [], ratings: [], duration: true, durationMin: '', durationMax: '' };
+  const AI_DEFAULTS = { voted: true, planned: true, type: 'all', genres: [], ratings: [], duration: true, durationMin: '', durationMax: '' };
   const readAi = () => ({
     voted: field('aiVoted').checked,
     planned: field('aiPlanned').checked,
-    filter: field('aiFilter').checked,
     type: field('exportType').value,
     genres: [...root.querySelectorAll('[name="exportGenre"]:checked')].map((input) => input.value),
     ratings: [...root.querySelectorAll('[name="exportRating"]:checked')].map((input) => Number(input.value)),
@@ -776,7 +773,6 @@
     field('aiVoted').checked = o.voted;
     $('#kpx-export-rating-options').disabled = !o.voted;
     field('aiPlanned').checked = o.planned;
-    field('aiFilter').checked = o.filter;
     field('exportType').value = o.type;
     fillExportGenres(o.genres);
     root.querySelectorAll('[name="exportRating"]').forEach((input) => { input.checked = o.ratings.includes(Number(input.value)); });
@@ -844,11 +840,10 @@
       if (!opts[kind]) continue;
       $('#kpx-ai-info').textContent = `Загружаю «${title}»…`;
       const isOpen = kind === listKind(location.pathname);
-      const { path, items } = await ensureList(isOpen ? [location.pathname] : listPaths(kind), {
+      const { items } = await ensureList(isOpen ? [location.pathname] : listPaths(kind), {
         onProgress: (p, total) => { $('#kpx-ai-info').textContent = `«${title}»: страница ${p} из ${total}…`; },
       });
-      const source = isOpen && opts.filter && path === location.pathname ? visibleItems() : items;
-      const rows = source.filter((item) =>
+      const rows = items.filter((item) =>
         (opts.type === 'all' || item.type === opts.type) &&
         (!opts.genres.length || item.genres.some((genre) => opts.genres.includes(genre))) &&
         (kind !== 'voted' || !opts.ratings.length || opts.ratings.includes(item.my)));
@@ -874,7 +869,6 @@
     if (opts.genres.length) intro.push('Отбор по жанрам: ' + opts.genres.join(', ') + '.');
     if (opts.ratings.length && opts.voted) intro.push('Мои оценки для отбора: ' + opts.ratings.join(', ') + '.');
     if (opts.durationMin || opts.durationMax) intro.push(`Продолжительность: от ${opts.durationMin || 'любой'} до ${opts.durationMax || 'любой'} минут. Включены тайтлы с известной длительностью.`);
-    if (opts.filter) intro.push('К открытому списку применены текущие фильтры таблицы.');
 
     const body = sections.map((s) => `## ${s.title} (${s.rows.length})\n${s.rows.map((item) => formatItem(item, opts.duration || opts.durationMin || opts.durationMax)).join('\n')}`);
     return [intro.join('\n'), ...body].join('\n\n');
