@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.10
+// @version      0.4.11
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -38,7 +38,8 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const r1 = (v) => Math.round(v * 10) / 10;
   const listKind = (path) => (/planned/.test(path) ? 'planned' : 'voted');
-  const curItems = () => lists[location.pathname] || [];
+  let activePath = location.pathname;
+  const curItems = () => lists[activePath] || [];
   const itemUrl = (i) => `/${i.type}/${i.id}/`;
 
   const store = {
@@ -272,7 +273,7 @@
       lists[path] = fresh.concat(lists[path]);
       stamps[path] = Date.now();
       store.set('list:' + path, { v: SCHEMA, ts: stamps[path], items: lists[path] });
-      if (path === location.pathname && !root.hidden) {
+      if (path === activePath && !root.hidden) {
         setStamp(path);
         fillGenres();
         render();
@@ -327,6 +328,7 @@
     #kpx .sized td{overflow-wrap:break-word}
     #kpx td.num{white-space:nowrap}
     #kpx #kpx-list{padding:6px 20px;color:#999;border-bottom:1px solid #2c2c33}
+    #kpx #kpx-list{display:flex;gap:8px;flex-shrink:0}
     #kpx.resizing{cursor:col-resize;user-select:none}
     #kpx td{padding:4px 10px;border-bottom:1px solid #22222a}
     #kpx tr:hover td{background:#1e1e25}
@@ -387,7 +389,10 @@
       <button id="kpx-refresh">Обновить</button>
       <button id="kpx-close" aria-label="Закрыть">✕</button>
     </header>
-    <div id="kpx-list"></div>
+    <div id="kpx-list" role="group" aria-label="Список профиля">
+      <button data-list="voted">Мои оценки</button>
+      <button data-list="planned">Буду смотреть</button>
+    </div>
     <details id="kpx-filters" open>
     <summary>Фильтры и сортировка</summary>
     <div class="filters">
@@ -448,7 +453,7 @@
       </details>
       <details id="kpx-export-ratings">
         <summary>Мои оценки для выгрузки</summary>
-        <p>Без отметок выгружаются все оценки. Отбор действует на список «Мои оценки».</p>
+        <p>Без отметок выгружаются все оценки. При выборе оценки в выгрузку включается список «Мои оценки».</p>
         <fieldset class="row" id="kpx-export-rating-options" style="border:0;margin:0;padding:0">
           ${Array.from({ length: 10 }, (_, index) => `<label><input type="checkbox" name="exportRating" value="${index + 1}"> ${index + 1}</label>`).join('')}
         </fieldset>
@@ -549,7 +554,7 @@
 
   async function loadDurations(items = visibleItems()) {
     if (durationLoad || root.hidden) return;
-    const path = location.pathname;
+    const path = activePath;
     const pending = [...new Map(items.map((item) => [itemUrl(item), item])).values()]
       .filter((item) => durationFor(item) === undefined);
     if (!pending.length) return;
@@ -562,7 +567,7 @@
     syncControls();
     try {
       for (const item of pending) {
-        if (controller.signal.aborted || location.pathname !== path) break;
+        if (controller.signal.aborted || activePath !== path) break;
         progress.textContent = `Длительности: проверено ${done} из ${pending.length}, найдено ${found}`;
         const minutes = await fetchDuration(item, controller.signal);
         const key = durationKey(item);
@@ -574,13 +579,13 @@
         if (done < pending.length) await sleep(PAGE_DELAY);
       }
     } catch (e) {
-      if (!controller.signal.aborted && location.pathname === path) note(e.message);
+      if (!controller.signal.aborted && activePath === path) note(e.message);
     } finally {
       durationLoad = null;
-      progress.textContent = location.pathname === path
+      progress.textContent = activePath === path
         ? `Длительности: проверено ${done} из ${pending.length}, найдено ${found}`
         : '';
-      if (!root.hidden && location.pathname === path && state.sort === 'duration') render();
+      if (!root.hidden && activePath === path && state.sort === 'duration') render();
       else syncControls();
     }
   }
@@ -597,7 +602,7 @@
       (!s.q || i.title.toLowerCase().includes(s.q) || i.original.toLowerCase().includes(s.q)) &&
       (s.type === 'all' || i.type === s.type) &&
       (!s.genre || i.genres.includes(s.genre)) &&
-      inRange(i.my, s.myMin, s.myMax) &&
+      (listKind(activePath) === 'planned' || inRange(i.my, s.myMin, s.myMax)) &&
       inRange(i.kp, s.kpMin, s.kpMax) &&
       inRange(i.year, s.yMin, s.yMax));
 
@@ -638,7 +643,7 @@
   }
 
   function renderTable(list) {
-    const voted = listKind(location.pathname) === 'voted';
+    const voted = listKind(activePath) === 'voted';
     const showDuration = state.sort === 'duration';
     const cols = [['title', 'Название'], ['year', 'Год'], ['genre', 'Жанр'], ['type', 'Тип']];
     if (voted) cols.push(['my', 'Моя оценка']);
@@ -664,7 +669,7 @@
   }
 
   function renderGrid(list) {
-    const voted = listKind(location.pathname) === 'voted';
+    const voted = listKind(activePath) === 'voted';
     return '<div class="grid">' + list
       .map((i) => {
         const badge = voted ? i.my : (i.kp != null ? r1(i.kp) : null);
@@ -680,9 +685,14 @@
 
   // подписи и состояние кнопок не зависят от данных, поэтому обновляем их и пока список грузится
   function syncControls() {
-    const planned = listKind(location.pathname) === 'planned';
+    const planned = listKind(activePath) === 'planned';
     root.classList.toggle('planned', planned);
-    $('#kpx-list').textContent = planned ? 'Буду смотреть' : 'Мои оценки';
+    root.querySelectorAll('[data-list]').forEach((button) => {
+      const selected = button.dataset.list === listKind(activePath);
+      button.classList.toggle('on', selected);
+      button.setAttribute('aria-pressed', String(selected));
+      button.disabled = loading || $('#kpx-build').disabled;
+    });
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
     $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
     const durationButton = $('#kpx-duration');
@@ -737,23 +747,29 @@
   async function load(force) {
     if (loading) return;
     loading = true;
+    const path = activePath;
+    syncControls();
     note('');
     $('#kpx-count').textContent = '';
     let fromCache = false;
     try {
       setMsg('Загружаю страницу 1…');
-      ({ fromCache } = await ensureList([location.pathname], { force, onProgress: (p, total) => setMsg(`Загружаю страницу ${p} из ${total}…`) }));
-      setStamp(location.pathname);
+      ({ fromCache } = await ensureList([path], { force, onProgress: (p, total) => {
+        if (path === activePath) setMsg(`Загружаю страницу ${p} из ${total}…`);
+      } }));
+      if (path !== activePath) return;
+      setStamp(path);
     } catch (e) {
-      setMsg('Ошибка: ' + e.message);
+      if (path === activePath) setMsg('Ошибка: ' + e.message);
       return;
     } finally {
       loading = false;
+      syncControls();
     }
     fillGenres();
     readFilters();
     render();
-    if (fromCache) refreshNewest(location.pathname);
+    if (fromCache) refreshNewest(activePath);
   }
 
   const AI_DEFAULTS = { voted: true, planned: true, type: 'all', genres: [], ratings: [], duration: true, durationMin: '', durationMax: '' };
@@ -771,7 +787,6 @@
   function loadAiOptions() {
     const o = { ...AI_DEFAULTS, ...store.get('ai') };
     field('aiVoted').checked = o.voted;
-    $('#kpx-export-rating-options').disabled = !o.voted;
     field('aiPlanned').checked = o.planned;
     field('exportType').value = o.type;
     fillExportGenres(o.genres);
@@ -785,7 +800,7 @@
     const genres = new Set(selected);
     for (const kind of ['voted', 'planned']) {
       if (!field(kind === 'voted' ? 'aiVoted' : 'aiPlanned').checked) continue;
-      const paths = kind === listKind(location.pathname) ? [location.pathname] : listPaths(kind);
+      const paths = kind === listKind(activePath) ? [activePath] : listPaths(kind);
       paths.forEach((path) => lists[path]?.forEach((item) => item.genres.forEach((genre) => genres.add(genre))));
     }
     $('#kpx-export-genres').innerHTML = [...genres].sort((a, b) => a.localeCompare(b, 'ru'))
@@ -797,11 +812,12 @@
     if (controls.some((control) => control.disabled)) return;
     const opts = readAi();
     controls.forEach((control) => { control.disabled = true; });
+    syncControls();
     try {
       for (const kind of ['voted', 'planned']) {
         if (!opts[kind]) continue;
         $('#kpx-ai-info').textContent = 'Загружаю жанры выбранных списков…';
-        await ensureList(kind === listKind(location.pathname) ? [location.pathname] : listPaths(kind));
+        await ensureList(kind === listKind(activePath) ? [activePath] : listPaths(kind));
       }
       fillExportGenres();
       $('#kpx-ai-info').textContent = '';
@@ -809,14 +825,16 @@
       $('#kpx-ai-info').textContent = 'Ошибка: ' + e.message;
     } finally {
       controls.forEach((control) => { control.disabled = false; });
+      syncControls();
     }
   }
 
   // Адрес второго списка строим от пользователя из текущего URL; ссылку из шапки сайта оставляем запасной
   function listPaths(kind) {
-    const user = location.pathname.split('/')[2];
+    const user = activePath.split('/')[2];
     const name = kind === 'planned' ? 'planned-to-watch' : 'voted-watched';
-    const header = kind === 'planned' ? document.querySelector('a[aria-label="Буду смотреть"]')?.getAttribute('href') : null;
+    const href = kind === 'planned' ? document.querySelector('a[aria-label="Буду смотреть"]')?.getAttribute('href') : null;
+    const header = href?.startsWith(`/user/${user}/movies/`) ? href : null;
     return [...new Set([`/user/${user}/movies/${name}/`, header].filter(Boolean))];
   }
 
@@ -839,8 +857,8 @@
     for (const [kind, title] of [['voted', 'Мои оценки'], ['planned', 'Буду смотреть']]) {
       if (!opts[kind]) continue;
       $('#kpx-ai-info').textContent = `Загружаю «${title}»…`;
-      const isOpen = kind === listKind(location.pathname);
-      const { items } = await ensureList(isOpen ? [location.pathname] : listPaths(kind), {
+      const isOpen = kind === listKind(activePath);
+      const { items } = await ensureList(isOpen ? [activePath] : listPaths(kind), {
         onProgress: (p, total) => { $('#kpx-ai-info').textContent = `«${title}»: страница ${p} из ${total}…`; },
       });
       const rows = items.filter((item) =>
@@ -891,6 +909,7 @@
     const button = $('#kpx-build');
     if (button.disabled) return;
     button.disabled = true;
+    syncControls();
     try {
       const text = await buildPrompt(loadRuntime);
       $('#kpx-preview').value = text;
@@ -901,14 +920,16 @@
       info.textContent = 'Ошибка: ' + e.message;
     } finally {
       button.disabled = false;
+      syncControls();
     }
   }
 
   root.addEventListener('input', (e) => {
     if (e.target.closest('#kpx-ai')) {
+      const selectedRating = e.target.name === 'exportRating' && e.target.checked;
+      if (selectedRating) field('aiVoted').checked = true;
       store.set('ai', readAi());
-      $('#kpx-export-rating-options').disabled = !field('aiVoted').checked;
-      if (['aiVoted', 'aiPlanned'].includes(e.target.name)) prepareExportGenres();
+      if (selectedRating || ['aiVoted', 'aiPlanned'].includes(e.target.name)) prepareExportGenres();
     }
     if (e.target.closest('.filters')) {
       if (e.target === field('sort') && e.target.value === 'added' && state.sort !== 'added') {
@@ -954,6 +975,16 @@
 
   root.addEventListener('click', (e) => {
     const t = e.target;
+    if (t.dataset.list) {
+      if (loading || $('#kpx-build').disabled || columnDrag || t.dataset.list === listKind(activePath)) return;
+      durationLoad?.abort();
+      activePath = listPaths(t.dataset.list)[0];
+      state.sort = t.dataset.list === 'planned' ? 'kp' : 'my';
+      field('sort').value = state.sort;
+      field('genre').value = '';
+      $('#kpx-duration-progress').textContent = '';
+      load(false);
+    }
     if (t.dataset.view) { state.view = t.dataset.view; render(); }
     if (t.id === 'kpx-close') setOpen(false);
     if (t.id === 'kpx-refresh') load(true);
@@ -998,7 +1029,7 @@
   openBtn.addEventListener('click', () => {
     setOpen(true);
     // на «Буду смотреть» своей оценки нет — сортируем по рейтингу КП
-    if (listKind(location.pathname) === 'planned' && state.sort === 'my') {
+    if (listKind(activePath) === 'planned' && state.sort === 'my') {
       state.sort = 'kp';
       field('sort').value = 'kp';
     } else {
@@ -1011,7 +1042,7 @@
       fillGenres();
       readFilters();
       render();
-      refreshNewest(location.pathname);
+      refreshNewest(activePath);
     } else {
       load(false);
     }
@@ -1027,6 +1058,7 @@
     openBtn.style.display = LIST_PATH.test(location.pathname) ? '' : 'none';
     if (location.pathname !== lastPath) {
       lastPath = location.pathname;
+      activePath = location.pathname;
       setOpen(false);
     }
   };
