@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.6
+// @version      0.4.7
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -158,11 +158,12 @@
   }
 
   async function fetchDuration(item, signal) {
-    const url = item.type === 'series' ? `/film/${item.id}/episodes/` : itemUrl(item);
+    const path = item.type === 'series' ? `/film/${item.id}/episodes/` : itemUrl(item);
+    const url = new URL(path, location.origin).href;
     const res = await fetch(url, { credentials: 'same-origin', signal });
     if (/captcha/i.test(res.url)) throw captchaError();
     if (res.status === 404 || res.status === 410) return null;
-    if (!res.ok || new URL(res.url).origin !== location.origin) {
+    if (!res.ok || new URL(res.url || url, url).origin !== location.origin) {
       throw new Error('Кинопоиск не отдал страницу тайтла. Повтори загрузку позже.');
     }
     const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
