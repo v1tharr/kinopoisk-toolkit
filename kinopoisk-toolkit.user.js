@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kinopoisk Toolkit
 // @namespace    https://github.com/v1tharr
-// @version      0.4.8
+// @version      0.4.9
 // @description  Каталог оценок и «Буду смотреть»: таблица, фильтры, рейтинг КП и выгрузка списков для ИИ
 // @author       v1tharr
 // @license      MIT
@@ -324,8 +324,10 @@
     #kpx .column-edge{position:absolute;inset:0 0 0 auto;width:12px;cursor:col-resize;touch-action:none}
     #kpx .column-edge::after{content:'';position:absolute;right:0;top:20%;height:60%;width:1px;background:#3a3a44}
     #kpx .column-edge:hover::after{background:#f60}
-    #kpx .sized th{white-space:normal}
-    #kpx .sized :is(th,td){overflow-wrap:anywhere}
+    #kpx .sized td{overflow-wrap:break-word}
+    #kpx td.num{white-space:nowrap}
+    #kpx #kpx-list{padding:6px 20px;color:#999;border-bottom:1px solid #2c2c33}
+    #kpx #kpx-list a{margin-left:12px;text-decoration:underline}
     #kpx.resizing{cursor:col-resize;user-select:none}
     #kpx td{padding:4px 10px;border-bottom:1px solid #22222a}
     #kpx tr:hover td{background:#1e1e25}
@@ -386,6 +388,7 @@
       <button id="kpx-refresh">Обновить</button>
       <button id="kpx-close" aria-label="Закрыть">✕</button>
     </header>
+    <div id="kpx-list"></div>
     <details id="kpx-filters" open>
     <summary>Фильтры и сортировка</summary>
     <div class="filters">
@@ -423,6 +426,7 @@
       </select>
       <button id="kpx-dir"></button>
       <button id="kpx-reset">Сбросить</button>
+      <button id="kpx-columns-reset">Сбросить ширину колонок</button>
       <button id="kpx-duration" hidden>Загрузить длительности</button>
     </div>
     </details>
@@ -617,12 +621,21 @@
   let columnDrag = null;
 
   function sizeTable(table, widths) {
+    const minimums = { title: 160, year: 76, genre: 160, type: 100, my: 130, kp: 130, duration: 180 };
+    const cells = [...table.rows[0].cells];
+    const fitted = cells.map((cell, index) => Math.max(minimums[cell.dataset.k] || 52,
+      Number.isFinite(widths[index]) ? widths[index] : 0));
+    const total = fitted.reduce((sum, width) => sum + width, 0);
+    const body = $('#kpx-body');
+    const padding = getComputedStyle(body);
+    const available = body.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight);
+    if (available > total) fitted[columnDrag?.index === 3 ? 1 : 3] += available - total;
     table.classList.add('sized');
     table.style.tableLayout = 'fixed';
     table.style.minWidth = '0';
-    table.style.width = widths.reduce((sum, width) => sum + width, 0) + 'px';
+    table.style.width = fitted.reduce((sum, width) => sum + width, 0) + 'px';
     table.querySelectorAll('col').forEach((col, index) => {
-      col.style.width = widths[index] + 'px';
+      col.style.width = fitted[index] + 'px';
     });
   }
 
@@ -669,7 +682,9 @@
 
   // подписи и состояние кнопок не зависят от данных, поэтому обновляем их и пока список грузится
   function syncControls() {
-    root.classList.toggle('planned', listKind(location.pathname) === 'planned');
+    const planned = listKind(location.pathname) === 'planned';
+    root.classList.toggle('planned', planned);
+    $('#kpx-list').innerHTML = `${planned ? 'Буду смотреть' : 'Мои оценки'}<a href="${esc(listPaths(planned ? 'voted' : 'planned')[0])}">${planned ? 'Открыть мои оценки' : 'Открыть «Буду смотреть»'}</a>`;
     root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === state.view));
     $('#kpx-dir').textContent = state.dir > 0 ? '▲ по возрастанию' : '▼ по убыванию';
     const durationButton = $('#kpx-duration');
@@ -707,6 +722,13 @@
       .join('');
     sel.value = counts.has(prev) ? prev : '';
   }
+
+  new ResizeObserver(() => {
+    if (columnDrag || root.hidden) return;
+    const table = $('#kpx-body table');
+    const widths = table && columnWidths[table.dataset.layout];
+    if (table && widths?.length === table.rows[0].cells.length) sizeTable(table, widths);
+  }).observe($('#kpx-body'));
 
   const setStamp = (path) => {
     $('#kpx-stamp').textContent = `обновлено ${new Date(stamps[path]).toLocaleString('ru')}`;
@@ -964,6 +986,11 @@
       field('type').value = 'all';
       field('genre').value = '';
       readFilters();
+      render();
+    }
+    if (t.id === 'kpx-columns-reset') {
+      Object.keys(columnWidths).forEach((key) => { delete columnWidths[key]; });
+      store.set('columnWidths', columnWidths);
       render();
     }
     if (t.tagName === 'TH' && t.dataset.k) {
